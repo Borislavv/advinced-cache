@@ -1,21 +1,22 @@
 package sharded
 
 import (
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
 	"sync"
 	"sync/atomic"
 )
 
 // Shard is a single partition of the sharded map.
 // Each shard is an independent concurrent map with its own lock and refCounted pool for releasers.
-type Shard[V Value] struct {
+type Shard[V resource.Resource] struct {
 	*sync.RWMutex              // Shard-level RWMutex for concurrency
-	items         map[uint64]V // Actual storage: key -> Value
+	items         map[uint64]V // Actual storage: key -> Resource
 	id            uint64       // Shard ID (index)
 	mem           int64        // Weight usage in bytes (atomic)
 }
 
 // NewShard creates a new shard with its own lock, value map, and releaser pool.
-func NewShard[V Value](id uint64, defaultLen int) *Shard[V] {
+func NewShard[V resource.Resource](id uint64, defaultLen int) *Shard[V] {
 	return &Shard[V]{
 		id:      id,
 		RWMutex: &sync.RWMutex{},
@@ -53,7 +54,10 @@ func (shard *Shard[V]) Get(key uint64) (val V, isHit bool) {
 	shard.RLock()
 	value, ok := shard.items[key]
 	shard.RUnlock()
-	return value, ok
+	if ok {
+		return value, ok
+	}
+	return value, false
 }
 
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
@@ -65,12 +69,24 @@ func (shard *Shard[V]) Remove(key uint64) (freed int64, isHit bool) {
 		delete(shard.items, key)
 		shard.Unlock()
 
-		weight := v.Weight()
-		atomic.AddInt64(&shard.mem, -weight)
+		for {
+			if !v.IsDoomed() && !v.MarkAsDoomed() {
+				continue
+			}
+			break
+		}
 
-		return weight, true
+		freedBytes := v.Weight()
+		atomic.AddInt64(&shard.mem, -freedBytes)
+		_ = v.Close()
+
+		if freedBytes > 0 {
+			return freedBytes, true
+		}
+		return 0, false
+	} else {
+		shard.Unlock()
 	}
-	shard.Unlock()
 
 	return 0, false
 }

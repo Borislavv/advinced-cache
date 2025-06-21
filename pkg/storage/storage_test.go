@@ -23,7 +23,7 @@ func init() {
 		Cache: config.CacheBox{
 			Enabled: true,
 			Preallocate: config.Preallocation{
-				PerShard: 8196,
+				PerShard: 768,
 			},
 			Eviction: config.Eviction{
 				Policy:    "lru",
@@ -38,7 +38,7 @@ func init() {
 			},
 			Storage: config.Storage{
 				Type: "malloc",
-				Size: 1024 * 1024 * 5, // 5 MB
+				Size: 1024 * 1024 * 256, // 5 MB
 			},
 		},
 	}
@@ -75,7 +75,8 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				_, _ = db.Get(responses[(i*j)%length].Request())
+				resp, _ := db.Get(responses[(i*j)%length].Request())
+				resp.Close()
 			}
 			i += 1000
 		}
@@ -130,7 +131,8 @@ func BenchmarkGetAllocs(b *testing.B) {
 	req := resp.Request()
 
 	allocs := testing.AllocsPerRun(100_000, func() {
-		db.Get(req)
+		r, _ := db.Get(req)
+		_ = r.Close()
 	})
 	b.ReportMetric(allocs, "allocs/op")
 

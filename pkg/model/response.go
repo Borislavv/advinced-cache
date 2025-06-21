@@ -1,15 +1,14 @@
 package model
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
+	"errors"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/list"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/synced"
 	"math"
 	"math/rand/v2"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -20,14 +19,9 @@ const gzipThreshold = 1024 // Minimum body size to apply gzip compression
 // -- Internal pools for efficient memory management --
 
 var (
-	GzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-	GzipWriterPool = &sync.Pool{New: func() any {
-		w, err := gzip.NewWriterLevel(nil, gzip.BestSpeed)
-		if err != nil {
-			panic("failed to Init. gzip writer: " + err.Error())
-		}
-		return w
-	}}
+	responsesPool = synced.NewBatchPool[*Response](func() *Response {
+		return new(Response).Init()
+	})
 )
 
 // Response is the main cache object, holding the request, payload, metadata, and list pointers.
@@ -37,7 +31,9 @@ type Response struct {
 	data          *atomic.Pointer[Data]                             // Cached data
 	lruListElem   *atomic.Pointer[list.Element[*Response]]          // Pointer for LRU list (per-shard)
 	revalidator   func(ctx context.Context) (data *Data, err error) // Closure for refresh/revalidation
-	weight        int64                                             // Response weight in bytes
+	weight        int64                                             // Weight in bytes
+	refCount      int64                                             // refCount for concurrent/lifecycle management
+	isDoomed      int64                                             // "Doomed" flag for objects marked for delete but still referenced
 	revalidatedAt int64                                             // Last revalidated time (nanoseconds since epoch)
 }
 
@@ -46,7 +42,7 @@ func NewResponse(
 	data *Data, req *Request, cfg *config.Cache,
 	revalidator func(ctx context.Context) (data *Data, err error),
 ) (*Response, error) {
-	return new(Response).Init().SetUp(cfg, data, req, revalidator), nil
+	return responsesPool.Get().Init().SetUp(cfg, data, req, revalidator), nil
 }
 
 // Init ensures all pointers are non-nil after pool Get.
@@ -86,7 +82,7 @@ func (r *Response) Touch() *Response {
 	return r
 }
 
-// ToQuery returns the query representation of the request.
+// ToQuery returns the args representation of the request.
 func (r *Response) ToQuery() []byte {
 	return r.request.Load().ToQuery()
 }
@@ -104,6 +100,11 @@ func (r *Response) ShardKey() uint64 {
 // ShouldBeRefreshed implements probabilistic refresh logic ("beta" algorithm).
 // Returns true if the entry is stale and, with a probability proportional to its staleness, should be refreshed now.
 func (r *Response) ShouldBeRefreshed() bool {
+	// Don't refresh doomed items.
+	if r.IsDoomed() {
+		return false
+	}
+
 	var (
 		beta          = r.cfg.Cache.Refresh.Beta
 		interval      = r.cfg.Cache.Refresh.TTL
@@ -184,7 +185,7 @@ func (r *Response) setUpWeight() int64 {
 				size += len(val)
 			}
 		}
-		size += len(data.body)
+		size += int(data.body.Weight())
 	}
 
 	return int64(size) + r.Request().Weight()
@@ -193,4 +194,94 @@ func (r *Response) setUpWeight() int64 {
 // Weight estimates the in-memory size of this response (including dynamic fields).
 func (r *Response) Weight() int64 {
 	return r.weight
+}
+
+// IsDoomed returns true if this object is scheduled for deletion.
+func (r *Response) IsDoomed() bool {
+	return atomic.LoadInt64(&r.isDoomed) == 1
+}
+
+// MarkAsDoomed marks the response as scheduled for delete, only if not already doomed.
+func (r *Response) MarkAsDoomed() bool {
+	return atomic.CompareAndSwapInt64(&r.isDoomed, 0, 1)
+}
+
+// RefCount returns the current refcount.
+func (r *Response) RefCount() int64 {
+	return atomic.LoadInt64(&r.refCount)
+}
+
+// IncRefCount increments the refcount.
+func (r *Response) IncRefCount() int64 {
+	return atomic.AddInt64(&r.refCount, 1)
+}
+
+// DecRefCount decrements the refcount.
+func (r *Response) DecRefCount() int64 {
+	return atomic.AddInt64(&r.refCount, -1)
+}
+
+// CASRefCount performs a CAS on the refcount.
+func (r *Response) CASRefCount(old, new int64) bool {
+	return atomic.CompareAndSwapInt64(&r.refCount, old, new)
+}
+
+// StoreRefCount stores a new refcount value directly.
+func (r *Response) StoreRefCount(new int64) {
+	atomic.StoreInt64(&r.refCount, new)
+}
+
+// ShardListElement returns the LRU list element (for cache eviction).
+func (r *Response) ShardListElement() any {
+	return r.lruListElem.Load()
+}
+
+// clear resets the Response for re-use from the pool.
+func (r *Response) clear() *Response {
+	r.weight = 0
+	r.refCount = 0
+	r.isDoomed = 0
+	r.revalidator = nil
+	r.revalidatedAt = 0
+	r.lruListElem.Store(nil)
+	r.request.Store(nil)
+	r.data.Store(nil)
+	return r
+}
+
+var (
+	respIsNilErr      = errors.New("response is nil")
+	tooManyReadersErr = errors.New("too many readers")
+)
+
+func (r *Response) Close() error {
+	if r == nil {
+		return respIsNilErr
+	}
+	for {
+		// Atomically decrement refCount. If the value is doomed and refCount drops to zero, actually release it.
+		if old := r.RefCount(); r.CASRefCount(old, old-1) {
+			if r.IsDoomed() && old == 1 {
+				r.release()
+				return nil
+			}
+			return tooManyReadersErr
+		} else {
+			continue
+		}
+	}
+}
+
+func (r *Response) release() {
+	r.data.Load().Release()
+	r.request.Load().Release()
+
+	el := r.lruListElem.Load()
+	if el != nil {
+		// releases resources inside
+		el.List().Remove(el)
+	}
+
+	r.clear()
+	responsesPool.Put(r)
 }

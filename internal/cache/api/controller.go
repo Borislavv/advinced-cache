@@ -84,14 +84,16 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 
 	// Try to get response from cache.
 	resp, found := c.cache.Get(req)
+	defer resp.Close()
 	if !found {
+		var err error
 		// On cache miss, get data from upstream backend and save in cache.
-		computed, err := c.backend.Fetch(ctx, req)
+		resp, err = c.backend.Fetch(ctx, req)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
-		resp = computed
+		defer resp.Close()
 		c.cache.Set(resp)
 	}
 
@@ -171,7 +173,6 @@ func (c *CacheController) runLogger(ctx context.Context) {
 				c.logAndReset()
 			default:
 				runtime.Gosched()
-				time.Sleep(time.Millisecond)
 			}
 		}
 	}()

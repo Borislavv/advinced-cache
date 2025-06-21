@@ -56,6 +56,8 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 
 	c.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
 		shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
+			defer resp.Close()
+
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -125,7 +127,7 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 			continue
 		}
 
-		data := model.NewData(c.cfg, entry.Path, entry.StatusCode, entry.Headers, entry.Body)
+		data := model.NewRawData(c.cfg, entry.Path, entry.StatusCode, entry.Headers, entry.Body)
 		req := model.NewRawRequest(c.cfg, entry.MapKey, entry.ShardKey, entry.Query, entry.Path)
 		resp, err := model.NewResponse(data, req, c.cfg, c.backend.RevalidatorMaker(req))
 		if err != nil {
@@ -136,8 +138,9 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 		}
 
 		c.Set(resp)
-		success++
+		_ = resp.Close()
 		dumpEntryPool.Put(entry)
+		success++
 	}
 
 	log.Info().Msgf("[dump] restored %d entries, errors: %d (elapsed: %s)", success, failed, time.Since(start))

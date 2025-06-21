@@ -5,13 +5,20 @@ local sport_min, sport_max = 1, 1
 local championship_min, championship_max = 1, 100
 local match_min, match_max = 1, 100
 
--- Счетчики
-local sport = sport_min
-local championship = championship_min
-local match = match_min
+-- Счётчики и параметры статистики
+local sport, championship, match
+local request_count = 0
+local print_every = 10000
+
+init = function()
+    sport = sport_min
+    championship = championship_min
+    match = match_min
+end
 
 request = function()
-    -- Формируем URL
+    request_count = request_count + 1
+
     local q = "choice[name]=betting"
         .. "&choice[choice][name]=betting_live"
         .. "&choice[choice][choice][name]=betting_live_null"
@@ -21,7 +28,10 @@ request = function()
 
     local path = "/api/v2/pagedata?language=en&domain=melbet-djibouti.com&timezone=3&project[id]=62&stream=homepage&" .. q
 
-    -- Инкрементируем счетчики с переходом к началу диапазона
+    if request_count % print_every == 0 then
+        print("Request #" .. request_count .. ": " .. path)
+    end
+
     match = match + 1
     if match > match_max then
         match = match_min

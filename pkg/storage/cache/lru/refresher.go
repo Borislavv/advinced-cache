@@ -77,7 +77,7 @@ func (r *Refresh) refreshNode(node *ShardNode) {
 	defer cancel()
 
 	samples := 0
-	node.shard.Walk(ctx, func(u uint64, resp *model.Response) bool {
+	node.shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
 		if samples >= refreshSamples {
 			return false
 		}

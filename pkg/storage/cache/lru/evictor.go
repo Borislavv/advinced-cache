@@ -27,14 +27,16 @@ func (c *Storage) evictor() {
 		case <-c.ctx.Done():
 			return
 		case <-t:
-			items, freedMem := c.evictUntilWithinLimit()
-			if items > 0 || freedMem > 0 {
-				select {
-				case <-c.ctx.Done():
-					return
-				case evictionStatCh <- evictionStat{items: items, freedMem: freedMem}:
-				default:
-					runtime.Gosched()
+			if c.shouldEvict() {
+				items, freedMem := c.evictUntilWithinLimit()
+				if items > 0 || freedMem > 0 {
+					select {
+					case <-c.ctx.Done():
+						return
+					case evictionStatCh <- evictionStat{items: items, freedMem: freedMem}:
+					default:
+						runtime.Gosched()
+					}
 				}
 			}
 		}
@@ -73,6 +75,11 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 			el, ok := lru.Next(offset)
 			if !ok {
 				break
+			}
+
+			if el.Value().IsDoomed() {
+				offset++
+				continue
 			}
 
 			freedMem, isHit := c.del(el.Value().MapKey())

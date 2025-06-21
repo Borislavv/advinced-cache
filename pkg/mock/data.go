@@ -2,13 +2,14 @@ package mock
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	localesandlanguages "github.com/Borislavv/traefik-http-cache-plugin/pkg/locale"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
+	localesandlanguages "github.com/Borislavv/traefik-http-cache-plugin/pkg/locale"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 )
 
 const (
@@ -29,7 +30,7 @@ func GenerateRandomRequests(cfg *config.Cache, path []byte, num int) []*model.Re
 				if i >= num {
 					return list
 				}
-				req := model.NewRequest(
+				req := model.NewTestRequest(
 					cfg,
 					path,
 					map[string][]byte{
@@ -68,7 +69,7 @@ func GenerateRandomResponses(cfg *config.Cache, path []byte, num int) []*model.R
 
 	list := make([]*model.Response, 0, num)
 	for _, req := range GenerateRandomRequests(cfg, path, num) {
-		data := model.NewData(cfg, path, http.StatusOK, headers, []byte(GenerateRandomString()))
+		data := model.NewRawData(cfg, path, http.StatusOK, headers, []byte(GenerateRandomString()))
 		resp, err := model.NewResponse(
 			data, req, cfg,
 			func(ctx context.Context) (*model.Data, error) {
