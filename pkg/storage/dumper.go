@@ -30,15 +30,15 @@ var dumpEntryPool = sync.Pool{
 var dumpIsNotEnabledErr = errors.New("persistence mode is not enabled")
 
 type dumpEntry struct {
-	Unique       string      `json:"unique"`
-	StatusCode   int         `json:"statusCode"`
-	Headers      http.Header `json:"headers"`
-	Body         []byte      `json:"body"`
-	Query        []byte      `json:"query"`
-	QueryHeaders [][2][]byte `json:"queryHeaders"`
-	Path         []byte      `json:"path"`
-	MapKey       uint64      `json:"mapKey"`
-	ShardKey     uint64      `json:"shardKey"`
+	Unique          string      `json:"unique"`
+	StatusCode      int         `json:"statusCode"`
+	ResponseHeaders http.Header `json:"responseHeaders"`
+	Body            []byte      `json:"body"`
+	Query           [][2][]byte `json:"query"`
+	QueryHeaders    [][2][]byte `json:"queryHeaders"`
+	Path            []byte      `json:"path"`
+	MapKey          uint64      `json:"mapKey"`
+	ShardKey        uint64      `json:"shardKey"`
 }
 
 type Dumper interface {
@@ -102,7 +102,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 				errCh <- fmt.Errorf("create dump temp file: %w", err)
 				return
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			bw := bufio.NewWriter(f)
 			enc := gob.NewEncoder(bw)
@@ -110,18 +110,18 @@ func (d *Dump) Dump(ctx context.Context) error {
 			shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
 				e := dumpEntryPool.Get().(*dumpEntry)
 				*e = dumpEntry{
-					Unique:       fmt.Sprintf("%d-%d", shardKey, key),
-					StatusCode:   resp.Data().StatusCode(),
-					Headers:      resp.Data().Headers(),
-					Body:         resp.Data().Body(),
-					Query:        resp.Request().ToQuery(),
-					QueryHeaders: resp.Request().Headers(),
-					Path:         resp.Request().Path(),
-					MapKey:       resp.Request().MapKey(),
-					ShardKey:     resp.Request().ShardKey(),
+					Unique:          fmt.Sprintf("%d-%d", shardKey, key),
+					StatusCode:      resp.Data().StatusCode(),
+					ResponseHeaders: resp.Data().Headers(),
+					Body:            resp.Data().Body(),
+					Query:           resp.Request().QueryKV(),
+					QueryHeaders:    resp.Request().Headers(),
+					Path:            resp.Request().Path(),
+					MapKey:          resp.Request().MapKey(),
+					ShardKey:        resp.Request().ShardKey(),
 				}
 
-				if err := enc.Encode(e); err != nil {
+				if err = enc.Encode(e); err != nil {
 					log.Error().Err(err).Msg("[dump] entry encode error")
 					atomic.AddInt32(&errorNum, 1)
 					errCh <- err
@@ -134,8 +134,10 @@ func (d *Dump) Dump(ctx context.Context) error {
 				return true
 			}, true)
 
-			bw.Flush()
-			if err := os.Rename(tmpName, filename); err != nil {
+			if err = bw.Flush(); err != nil {
+				errCh <- fmt.Errorf("flush error: %w", err)
+			}
+			if err = os.Rename(tmpName, filename); err != nil {
 				errCh <- fmt.Errorf("rename dump file: %w", err)
 			}
 		}(shardKey, shard)
@@ -197,14 +199,14 @@ func (d *Dump) Load(ctx context.Context) error {
 		go func(file string) {
 			defer wg.Done()
 
-			f, err := os.Open(file)
-			if err != nil {
-				errCh <- fmt.Errorf("open dump file: %w", err)
+			f, ferr := os.Open(file)
+			if ferr != nil {
+				errCh <- fmt.Errorf("open dump file: %w", ferr)
 				return
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
-			dec := gob.NewDecoder(bufio.NewReader(f)) // 400KB buffer
+			dec := gob.NewDecoder(bufio.NewReader(f))
 		loop:
 			for {
 				select {
@@ -222,9 +224,9 @@ func (d *Dump) Load(ctx context.Context) error {
 						break loop
 					}
 
-					resp, err := d.buildResponseFromEntry(entry)
-					if err != nil {
-						log.Error().Err(err).Msg("[dump] response build failed")
+					resp, rerr := d.buildResponseFromEntry(entry)
+					if rerr != nil {
+						log.Error().Err(rerr).Msg("[dump] response build failed")
 						dumpEntryPool.Put(entry)
 						atomic.AddInt32(&errorNum, 1)
 						continue loop
@@ -249,8 +251,8 @@ func (d *Dump) Load(ctx context.Context) error {
 }
 
 func (d *Dump) buildResponseFromEntry(entry *dumpEntry) (*model.Response, error) {
-	req := model.NewRawRequest(d.cfg, entry.MapKey, entry.ShardKey, entry.Query, entry.Path, entry.QueryHeaders)
-	data := model.NewData(req.Rule(), entry.StatusCode, entry.Headers, entry.Body)
+	req := model.NewRawRequest(d.cfg, entry.MapKey, entry.ShardKey, entry.Path, entry.Query, entry.QueryHeaders)
+	data := model.NewData(req.Rule(), entry.StatusCode, entry.ResponseHeaders, entry.Body)
 	resp, err := model.NewResponse(data, req, d.cfg, d.backend.RevalidatorMaker(req))
 	if err != nil {
 		return nil, err

@@ -71,11 +71,6 @@ func (r *Response) Touch() *Response {
 	return r
 }
 
-// ToQuery returns the query representation of the request.
-func (r *Response) ToQuery() []byte {
-	return r.request.Load().ToQuery()
-}
-
 // MapKey returns the key of the associated request.
 func (r *Response) MapKey() uint64 {
 	return r.request.Load().MapKey()
@@ -223,7 +218,7 @@ func (r *Response) PrintDump(marker string) {
 		marker,
 		req.MapKey(),
 		req.ShardKey(),
-		string(req.ToQuery()),
+		string(req.Query()),
 		strings.Join(reqHeaders, "\n\t\t\t- "),
 		data.StatusCode(),
 		strings.Join(dataHeaders, "\n\t\t\t- "),

@@ -2,6 +2,8 @@ package cache
 
 import (
 	"context"
+	"time"
+
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/internal/cache/server"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
@@ -15,7 +17,6 @@ import (
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
-	"time"
 )
 
 // App defines the cache application lifecycle interface.

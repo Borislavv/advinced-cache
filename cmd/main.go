@@ -11,6 +11,8 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
 	"go.uber.org/automaxprocs/maxprocs"
+	"net/http"
+	_ "net/http/pprof"
 	"runtime"
 	"time"
 )
@@ -18,6 +20,10 @@ import (
 // Initializes environment variables from .env files and binds them using Viper.
 // This allows overriding any value via environment variables.
 func init() {
+	go func() {
+		http.ListenAndServe("localhost:6060", nil)
+	}()
+
 	// Load .env and .env.local files for configuration overrides.
 	if err := godotenv.Overload(".env", ".env.local"); err != nil {
 		panic(err)

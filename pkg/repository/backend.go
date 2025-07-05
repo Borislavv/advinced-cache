@@ -97,7 +97,7 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 	defer cancel()
 
 	url := s.cfg.Cache.Upstream.Url
-	query := req.ToQuery()
+	query := req.Query()
 
 	// Efficiently concatenate base URL and query.
 	queryBuf := make([]byte, 0, len(url)+len(req.Path())+len(query))

@@ -56,9 +56,7 @@ cache:
         headers:
           - Content-Type       # Тип ответа. Например: application/json.
           - Content-Encoding   # Указывает, что тело сжатое (gzip, br).
-          - Cache-Control      # Если отдаёшь клиенту max-age, public/private.
-          - Vary               # Если ты варьируешь по Accept-Encoding или Accept-Language.
-
+          -
     - path: "/api/v1/pagecontent"
       ttl: "36h"
       error_ttl: "3h"
@@ -72,5 +70,3 @@ cache:
         headers:
           - Content-Type       # Тип ответа. Например: application/json.
           - Content-Encoding   # Указывает, что тело сжатое (gzip, br).
-          - Cache-Control      # Если отдаёшь клиенту max-age, public/private.
-          - Vary               # Если ты варьируешь по Accept-Encoding или Accept-Language.

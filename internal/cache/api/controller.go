@@ -101,6 +101,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		}
 		resp = computed
 		c.cache.Set(resp)
+		resp.PrintDump("CONTROLLER")
 	}
 
 	// Write status, headers, and body from the cached (or fetched) response.
