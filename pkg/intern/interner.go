@@ -34,7 +34,7 @@ func (i *Interner) Print() {
 
 // Intern returns an interned []byte for the given slice.
 // It assumes that the input []byte will not be modified after interning.
-func (i *Interner) Intern(b []byte) []byte {
+func (i *Interner) Intern(b []byte, shouldCopy bool) []byte {
 	// Use zero-copy string as key.
 	key := unsafe.String(unsafe.SliceData(b), len(b))
 
@@ -45,16 +45,21 @@ func (i *Interner) Intern(b []byte) []byte {
 		return v
 	}
 
-	copied := make([]byte, len(b))
-	copy(copied, b)
+	var val []byte
+	if shouldCopy {
+		val = make([]byte, len(b))
+		copy(val, b)
+	} else {
+		val = b
+	}
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if existing, ok := i.data[key]; ok {
 		return existing
 	}
-	i.data[key] = copied
-	return copied
+	i.data[key] = val
+	return val
 }
 
 func (i *Interner) InternStr(s string) []byte {

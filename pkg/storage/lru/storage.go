@@ -63,8 +63,8 @@ func (s *Storage) Run() {
 
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
-func (s *Storage) Get(req *model.Request) (*model.Response, bool) {
-	resp, found := s.shardedMap.Get(req.MapKey(), req.ShardKey())
+func (s *Storage) Get(key, shard uint64) (*model.Response, bool) {
+	resp, found := s.shardedMap.Get(key, shard)
 	if found {
 		s.touch(resp)
 		return resp, true

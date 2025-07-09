@@ -1,28 +1,20 @@
 package model
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
-	"github.com/zeebo/xxh3"
 	"net/http"
 	"strings"
-	"sync"
 	"unsafe"
-)
-
-var (
-	hasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
 )
 
 type Request struct {
 	rule    *config.Rule // possibly nil pointer (be careful)
 	key     uint64
 	shard   uint64
-	query   []byte
 	path    []byte
+	query   [][2][]byte
 	headers [][2][]byte
 }
 
@@ -47,11 +39,11 @@ func NewRequestFromNetHttp(cfg *config.Cache, r *http.Request) (*Request, error)
 	return nil, errors.New("not implemented yet")
 }
 
-func NewRequest(rule *config.Rule, path []byte, queries [][2][]byte, headers [][2][]byte) *Request {
-	return (&Request{rule: rule, path: path}).setUpKeys(queries, headers)
+func NewRequest(rule *config.Rule, key, shard uint64, path []byte, query, headers [][2][]byte) *Request {
+	return &Request{key: key, shard: shard, rule: rule, path: path, query: query, headers: headers}
 }
 
-func NewRawRequest(rule *config.Rule, key, shard uint64, query, path []byte, headers [][2][]byte) *Request {
+func NewRawRequest(rule *config.Rule, key, shard uint64, path []byte, query, headers [][2][]byte) *Request {
 	return &Request{key: key, shard: shard, query: query, path: path, headers: headers, rule: rule}
 }
 
@@ -60,6 +52,21 @@ func (r *Request) Rule() *config.Rule {
 }
 
 func (r *Request) ToQuery() []byte {
+	l := 1
+	for _, kv := range r.query {
+		l += len(kv[0]) + len(kv[1]) + 1
+	}
+	buf := make([]byte, 0, l)
+	buf = append(buf, []byte("?")...)
+	for _, kv := range r.query {
+		buf = append(buf, kv[0]...)
+		buf = append(buf, []byte("&")...)
+		buf = append(buf, kv[1]...)
+	}
+	return buf
+}
+
+func (r *Request) Query() [][2][]byte {
 	return r.query
 }
 
@@ -85,82 +92,6 @@ func (r *Request) Weight() int64 {
 		weight += int64(unsafe.Sizeof(kv)) + int64(len(kv[0])) + int64(len(kv[1]))
 	}
 	return weight
-}
-
-var bufPool = &sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
-
-func (r *Request) setUpKeys(argsKvPairs [][2][]byte, headersKvPairs [][2][]byte) *Request {
-	argsLength := 1
-	for _, pair := range argsKvPairs {
-		argsLength += len(pair[0]) + len(pair[1]) + 2
-	}
-	headersLength := 0
-	for _, pair := range headersKvPairs {
-		headersLength += len(pair[0]) + len(pair[1])
-	}
-
-	buf := bufPool.Get().(*bytes.Buffer)
-	defer func() {
-		buf.Reset()
-		bufPool.Put(buf)
-	}()
-	buf.Grow(argsLength + headersLength)
-
-	for _, pair := range argsKvPairs {
-		buf.Write(pair[0])
-		buf.Write(pair[1])
-	}
-	for _, pair := range headersKvPairs {
-		buf.Write(pair[0])
-		buf.Write(pair[1])
-	}
-
-	r.key = hash(buf)
-	r.shard = sharded.MapShardKey(r.key)
-
-	return r
-}
-
-func (r *Request) SetUpQueryAndHeaders(argsKvPairs [][2][]byte, headersKvPairs [][2][]byte) {
-	argsLength := 1
-	for _, pair := range argsKvPairs {
-		argsLength += len(pair[0]) + len(pair[1]) + 2
-	}
-
-	queryBuf := make([]byte, 0, argsLength)
-	queryBuf = append(queryBuf, []byte("?")...)
-	for _, pair := range argsKvPairs {
-		queryBuf = append(queryBuf, pair[0]...)
-		queryBuf = append(queryBuf, []byte("=")...)
-		queryBuf = append(queryBuf, pair[1]...)
-		queryBuf = append(queryBuf, []byte("&")...)
-	}
-	if len(queryBuf) > 1 {
-		queryBuf = queryBuf[:len(queryBuf)-1] // remove the last & char
-	} else {
-		queryBuf = queryBuf[:0] // no parameters
-	}
-
-	r.query = queryBuf
-	r.headers = headersKvPairs
-}
-
-func hash(buf *bytes.Buffer) uint64 {
-	hasher := hasherPool.Get().(*xxh3.Hasher)
-	defer func() {
-		hasher.Reset()
-		hasherPool.Put(hasher)
-	}()
-
-	if _, err := hasher.Write(buf.Bytes()); err != nil {
-		panic(err)
-	}
-
-	return hasher.Sum64()
 }
 
 //func getFilteredAndSortedKeyQueriesNetHttp(r *http.Request, allowed [][]byte) (kvPairs [][2][]byte) {

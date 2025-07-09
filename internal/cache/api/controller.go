@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	"github.com/Borislavv/advanced-cache/pkg/headers"
 	"github.com/Borislavv/advanced-cache/pkg/intern"
+	"github.com/Borislavv/advanced-cache/pkg/keys"
 	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/queries"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/rules"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
@@ -18,9 +21,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"net/http"
-	"sort"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -74,6 +75,23 @@ func NewCacheController(
 			c.cache.Set(resp)
 		}
 	}()
+	//go func() {
+	//	for {
+	//		select {
+	//		case <-ctx.Done():
+	//			return
+	//		default:
+	//			rsp, fnd := c.cache.GetRandom()
+	//			if fnd {
+	//				rsp.PrintDump("controller")
+	//				intern.PathInterner.Print()
+	//				intern.QueryKeyInterner.Print()
+	//				intern.HeaderKeyInterner.Print()
+	//			}
+	//			time.Sleep(time.Second * 5)
+	//		}
+	//	}
+	//}()
 	c.runLogger(ctx)
 	return c
 }
@@ -82,45 +100,39 @@ func NewCacheController(
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
-	path := intern.PathInterner.Intern(r.Path())
-
+	path := intern.PathInterner.Intern(r.Path(), true)
 	rule := rules.Match(c.cfg.Cache, path)
 	if rule == nil {
 		c.respondThatServiceIsTemporaryUnavailable(ruleNotFoundError, r)
 		return
 	}
 
-	queries := getFilteredAndSortedKeyQueriesFastHttp(r, rule.CacheKey.QueryBytes)
-	headers := getFilteredAndSortedKeyHeadersFastHttp(&r.Request.Header, rule.CacheKey.HeadersBytes)
-	defer func() {
-		queries = queries[:0]
-		queriesPool.Put(queries)
-		headers = headers[:0]
-		headersPool.Put(headers)
-	}()
+	key, shard := keys.CalculateFasthttp(rule, path, r)
 
-	req := model.NewRequest(rule, path, queries, headers)
-
-	// Try to get response from cache.
-	resp, found := c.cache.Get(req)
+	resp, found := c.cache.Get(key, shard)
 	if !found {
-		req.SetUpQueryAndHeaders(queries, headers)
+		panic("!!!!!found")
+		// todo need write all headers (proxy them)
+		query := queries.FilteredAndSortedKeyQueriesFastHttp(r, rule.CacheKey.QueryBytes)
+		header := headers.FilteredAndSortedKeyHeadersFastHttp(&r.Request.Header, rule.CacheKey.HeadersBytes)
+		req := model.NewRequest(rule, key, shard, path, query, header)
+
 		// On cache miss, get data from upstream backend and save in cache.
 		computed, err := c.backend.Fetch(c.ctx, req)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
+		c.cache.Set(computed)
 		resp = computed
-		c.cache.Set(resp)
 	}
 
 	// Write status, headers, and body from the cached (or fetched) response.
 	data := resp.Data()
 	r.Response.SetStatusCode(data.StatusCode())
-	for key, vv := range data.Headers() {
+	for name, vv := range data.Headers() {
 		for _, value := range vv {
-			r.Response.Header.Add(key, value)
+			r.Response.Header.Add(name, value)
 		}
 	}
 
@@ -206,67 +218,8 @@ func (c *CacheController) logAndReset() {
 	duration.Store(0)
 }
 
-var (
-	queriesPool = sync.Pool{
-		New: func() any { return make([][2][]byte, 0, 10) },
-	}
-	headersPool = sync.Pool{
-		New: func() any { return make([][2][]byte, 0, 8) },
-	}
-)
-
-func getFilteredAndSortedKeyQueriesFastHttp(ctx *fasthttp.RequestCtx, allowed [][]byte) [][2][]byte {
-	if len(allowed) == 0 {
-		return nil
-	}
-
-	filtered := queriesPool.Get().([][2][]byte)
-	filtered = filtered[:0] // reuse but zero length
-
-	ctx.QueryArgs().All()(func(k, v []byte) bool {
-		for _, ak := range allowed {
-			if bytes.HasPrefix(k, ak) {
-				internedKey := intern.QueryKeyInterner.Intern(k)
-				// NOTE: safe copy for value
-				filtered = append(filtered, [2][]byte{internedKey, append([]byte(nil), v...)})
-				break
-			}
-		}
-		return true
-	})
-
-	// Sort in place
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
-
-	return filtered
-}
-
-func getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestHeader, allowed [][]byte) [][2][]byte {
-	if len(allowed) == 0 {
-		return nil
-	}
-
-	filtered := headersPool.Get().([][2][]byte)
-	filtered = filtered[:0] // reuse but zero length
-
-	r.All()(func(k, v []byte) bool {
-		for _, ak := range allowed {
-			if bytes.EqualFold(k, ak) {
-				internedKey := intern.HeaderKeyInterner.Intern(k)
-				// NOTE: safe copy for value
-				filtered = append(filtered, [2][]byte{internedKey, append([]byte(nil), v...)})
-				break
-			}
-		}
-		return true
-	})
-
-	// Sort in place
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
-
-	return filtered
+func copyBytes(q []byte) []byte {
+	buf := make([]byte, len(q))
+	copy(buf, q)
+	return buf
 }

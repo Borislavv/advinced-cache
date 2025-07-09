@@ -35,7 +35,7 @@ type dumpEntry struct {
 	StatusCode   int         `json:"statusCode"`
 	Headers      http.Header `json:"headers"`
 	Body         []byte      `json:"body"`
-	Query        []byte      `json:"query"`
+	Query        [][2][]byte `json:"query"`
 	QueryHeaders [][2][]byte `json:"queryHeaders"`
 	Path         []byte      `json:"path"`
 	MapKey       uint64      `json:"mapKey"`
@@ -115,7 +115,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 					StatusCode:   resp.Data().StatusCode(),
 					Headers:      resp.Data().Headers(),
 					Body:         resp.Data().Body(),
-					Query:        resp.Request().ToQuery(),
+					Query:        resp.Request().Query(),
 					QueryHeaders: resp.Request().Headers(),
 					Path:         resp.Request().Path(),
 					MapKey:       resp.Request().MapKey(),
@@ -250,7 +250,7 @@ func (d *Dump) Load(ctx context.Context) error {
 }
 
 func (d *Dump) buildResponseFromEntry(entry *dumpEntry) (*model.Response, error) {
-	req := model.NewRawRequest(matchRule(d.cfg, entry.Path), entry.MapKey, entry.ShardKey, entry.Query, entry.Path, entry.QueryHeaders)
+	req := model.NewRawRequest(matchRule(d.cfg, entry.Path), entry.MapKey, entry.ShardKey, entry.Path, entry.Query, entry.QueryHeaders)
 	data := model.NewData(req.Rule(), entry.StatusCode, entry.Headers, entry.Body)
 	resp, err := model.NewResponse(data, req, d.cfg, d.backend.RevalidatorMaker(req))
 	if err != nil {

@@ -12,7 +12,7 @@ type Storage interface {
 
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
-	Get(req *model.Request) (resp *model.Response, isHit bool)
+	Get(key, shard uint64) (resp *model.Response, isHit bool)
 
 	// GetRandom attempts to retrieve any one cached response.
 	GetRandom() (resp *model.Response, isFound bool)
