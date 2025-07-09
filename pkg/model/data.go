@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/intern"
 	"net/http"
 	"strconv"
 	"sync"
@@ -37,7 +38,7 @@ type Data struct {
 func NewData(rule *config.Rule, statusCode int, headers http.Header, body []byte) *Data {
 	for headerKey, headerValues := range headers {
 		delete(headers, headerKey)
-		internedKey := HeaderKeyInterner.InternStr(headerKey)
+		internedKey := intern.HeaderKeyInterner.InternStr(headerKey)
 		headers[unsafe.String(unsafe.SliceData(internedKey), len(internedKey))] = headerValues
 	}
 

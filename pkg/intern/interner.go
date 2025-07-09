@@ -6,6 +6,12 @@ import (
 	"unsafe"
 )
 
+var (
+	PathInterner      = NewInterner(8)
+	HeaderKeyInterner = NewInterner(8)
+	QueryKeyInterner  = NewInterner(16)
+)
+
 // Interner is a simple threadsafe interner for []byte.
 type Interner struct {
 	mu   sync.RWMutex

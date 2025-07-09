@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/gob"
 	"errors"
@@ -249,7 +250,7 @@ func (d *Dump) Load(ctx context.Context) error {
 }
 
 func (d *Dump) buildResponseFromEntry(entry *dumpEntry) (*model.Response, error) {
-	req := model.NewRawRequest(d.cfg, entry.MapKey, entry.ShardKey, entry.Query, entry.Path, entry.QueryHeaders)
+	req := model.NewRawRequest(matchRule(d.cfg, entry.Path), entry.MapKey, entry.ShardKey, entry.Query, entry.Path, entry.QueryHeaders)
 	data := model.NewData(req.Rule(), entry.StatusCode, entry.Headers, entry.Body)
 	resp, err := model.NewResponse(data, req, d.cfg, d.backend.RevalidatorMaker(req))
 	if err != nil {
@@ -339,6 +340,15 @@ func rotateOldFiles(dir, baseName, ext string, maxFiles int) error {
 	for i := 0; i < numToRemove; i++ {
 		if err := os.Remove(sorted[i]); err != nil {
 			log.Error().Err(err).Msgf("[dump] failed to remove old dump file %s", sorted[i])
+		}
+	}
+	return nil
+}
+
+func matchRule(cfg *config.Cache, path []byte) *config.Rule {
+	for _, rule := range cfg.Cache.Rules {
+		if bytes.HasPrefix(path, rule.PathBytes) {
+			return rule
 		}
 	}
 	return nil

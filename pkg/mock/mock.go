@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/rules"
 	"net/http"
 	"strconv"
 )
@@ -14,6 +15,11 @@ func GenerateRandomRequests(cfg *config.Cache, path []byte, num int) []*model.Re
 	i := 0
 	list := make([]*model.Request, 0, num)
 
+	rule := rules.Match(cfg, path)
+	if rule == nil {
+		panic("rule not found")
+	}
+
 	// Iterate over all possible language and project ID combinations until num requests are created
 	for {
 		//for _, lng := range localesandlanguages.LanguageCodeList() {
@@ -22,7 +28,7 @@ func GenerateRandomRequests(cfg *config.Cache, path []byte, num int) []*model.Re
 			return list
 		}
 		req := model.NewRequest(
-			cfg,
+			rule,
 			path,
 			[][2][]byte{
 				{[]byte("project[id]"), []byte("285")},
@@ -54,6 +60,11 @@ func StreamRandomRequests(ctx context.Context, cfg *config.Cache, path []byte, n
 	i := 0
 	out := make(chan *model.Request)
 
+	rule := rules.Match(cfg, path)
+	if rule == nil {
+		panic("rule not found")
+	}
+
 	go func() {
 		defer close(out)
 
@@ -67,7 +78,7 @@ func StreamRandomRequests(ctx context.Context, cfg *config.Cache, path []byte, n
 					return
 				}
 				req := model.NewRequest(
-					cfg,
+					rule,
 					path,
 					[][2][]byte{
 						{[]byte("project[id]"), []byte("285")},
