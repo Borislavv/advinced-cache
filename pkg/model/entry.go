@@ -469,7 +469,8 @@ func (e *Entry) WillUpdateAt() int64 {
 func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	b = bytes.TrimLeft(b, "?")
 
-	var query = pools.KeyValueSlicePool.Get().([][2][]byte)
+	queries = pools.KeyValueSlicePool.Get().([][2][]byte)
+	queries = queries[:0]
 
 	type state struct {
 		kIdx   int
@@ -481,21 +482,45 @@ func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	s := state{}
 	for idx, bt := range b {
 		if bt == '&' {
-			if s.kFound && s.vFound {
-				query = append(query, [2][]byte{b[s.kIdx:s.vIdx], b[s.vIdx:idx]})
-				s.vIdx = 0
-				s.vFound = false
+			if s.kFound {
+				var key, val []byte
+				if s.vFound {
+					key = b[s.kIdx : s.vIdx-1]
+					val = b[s.vIdx:idx]
+				} else {
+					key = b[s.kIdx:idx]
+					val = []byte{}
+				}
+				queries = append(queries, [2][]byte{key, val})
 			}
 			s.kIdx = idx + 1
 			s.kFound = true
-			continue
-		} else if bt == '=' {
+			s.vIdx = 0
+			s.vFound = false
+		} else if bt == '=' && !s.vFound {
 			s.vIdx = idx + 1
 			s.vFound = true
+		} else if !s.kFound {
+			s.kIdx = idx
+			s.kFound = true
 		}
 	}
-	return query, func() {
-		pools.KeyValueSlicePool.Put(query)
+
+	if s.kFound {
+		var key, val []byte
+		if s.vFound {
+			key = b[s.kIdx : s.vIdx-1]
+			val = b[s.vIdx:]
+		} else {
+			key = b[s.kIdx:]
+			val = []byte{}
+		}
+		queries = append(queries, [2][]byte{key, val})
+	}
+
+	return queries, func() {
+		queries = queries[:0]
+		pools.KeyValueSlicePool.Put(queries)
 	}
 }
 
