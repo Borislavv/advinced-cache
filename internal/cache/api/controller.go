@@ -67,7 +67,7 @@ func NewCacheController(
 		log.Info().Msg("[cache-controller] mock data start loading")
 		defer log.Info().Msg("[cache-controller] mocked data finished loading")
 		path := []byte("/api/v2/pagedata")
-		for entry := range mock.StreamSeqEntries(ctx, c.cfg.Cache, c.backend, path, 5_000_000) {
+		for entry := range mock.StreamSeqEntries(ctx, c.cfg.Cache, c.backend, path, 1_000_000) {
 			c.cache.Set(entry)
 		}
 	}()
@@ -78,11 +78,12 @@ func NewCacheController(
 	//		case <-ctx.Done():
 	//			return
 	//		default:
-	//			rsp, fnd := c.cache.GetRand()
+	//			entry, fnd := c.cache.GetRand()
 	//			if fnd {
-	//				path, query, qHeaders, code, _, _, err := rsp.Payload()
+	//				path, query, qHeaders, _, _, code, releaser, err := entry.Payload()
 	//				if err != nil {
 	//					log.Error().Err(err).Msg("error getting payload: " + err.Error())
+	//					releaser()
 	//				}
 	//				header := make([]byte, 0, 128)
 	//				for _, kv := range qHeaders {
@@ -91,12 +92,17 @@ func NewCacheController(
 	//					header = append(header, kv[1]...)
 	//					header = append(header, []byte(",")...)
 	//				}
-	//				fmt.Printf("path: %v, query: %v, qHeaders: %v, code: %d", string(path), string(query), string(header), code)
+	//				fmt.Printf(
+	//					"key: %d, shard: %dpath: %v, query: %v, qHeaders: %v, code: %d",
+	//					entry.MapKey(), entry.ShardKey(), string(path), string(query), string(header), code,
+	//				)
+	//				releaser()
 	//			}
 	//			time.Sleep(time.Second * 5)
 	//		}
 	//	}
 	//}()
+
 	c.runLogger(ctx)
 	return c
 }
@@ -104,20 +110,10 @@ func NewCacheController(
 func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]byte, releaseFn func()) {
 	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
 	r.Request.Header.All()(func(key []byte, value []byte) bool {
-		k := pools.EntryQueryHeadersPool.Get().([]byte)
-		v := pools.EntryQueryHeadersPool.Get().([]byte)
-		copy(k, key)
-		copy(v, value)
-		headers = append(headers, [2][]byte{k, v})
+		headers = append(headers, [2][]byte{key, value})
 		return true
 	})
 	return headers, func() {
-		for _, kv := range headers {
-			kv[0] = kv[0][:0]
-			kv[1] = kv[1][:0]
-			pools.EntryQueryHeadersPool.Put(kv[0])
-			pools.EntryQueryHeadersPool.Put(kv[1])
-		}
 		headers = headers[:0]
 		pools.KeyValueSlicePool.Put(headers)
 	}
@@ -140,7 +136,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		releaser func()
 	)
 
-	v, found := c.cache.Get(entry.MapKey(), entry.ShardKey())
+	value, found := c.cache.Get(entry.MapKey(), entry.ShardKey())
 	if !found {
 		path := r.Path()
 		queryString := r.QueryArgs().QueryString()
@@ -157,12 +153,12 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 
 		entry.SetRevalidator(c.backend.RevalidatorMaker())
 		c.cache.Set(entry)
-		v = entry
+		value = entry
 	} else {
 		defer entryReleaser() // release the entry only on the case when existing entry was found in cache,
 		// otherwise created entry will escape to heap (link must be alive while entry in cache)
 
-		_, _, _, headers, body, status, releaser, err = v.Payload()
+		_, _, _, headers, body, status, releaser, err = value.Payload()
 		defer releaser()
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
@@ -177,7 +173,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	}
 
 	// Set up Last-Modified header
-	c.setLastModifiedHeader(r, v, status)
+	c.setLastModifiedHeader(r, value, status)
 
 	// Write body
 	if _, err = serverutils.Write(body, r); err != nil {

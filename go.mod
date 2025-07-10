@@ -13,6 +13,8 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287
 	github.com/spf13/viper v1.20.1
+	github.com/stretchr/testify v1.10.0
+	github.com/valyala/bytebufferpool v1.0.0
 	github.com/valyala/fasthttp v1.63.0
 	github.com/zeebo/xxh3 v1.0.2
 	go.uber.org/automaxprocs v1.6.0
@@ -43,6 +45,7 @@ require (
 	github.com/cloudflare/circl v1.6.1 // indirect
 	github.com/coreos/go-oidc/v3 v3.14.1 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgraph-io/badger v1.6.2 // indirect
 	github.com/dgraph-io/badger/v2 v2.2007.4 // indirect
 	github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da // indirect
@@ -79,6 +82,7 @@ require (
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_golang v1.22.0 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.65.0 // indirect
@@ -108,7 +112,6 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/tailscale/tscert v0.0.0-20240608151842-d3f834017e53 // indirect
 	github.com/urfave/cli v1.22.17 // indirect
-	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect

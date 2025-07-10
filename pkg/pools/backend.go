@@ -9,7 +9,7 @@ import (
 
 var BackendBufPool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 0, 32)
+		return make([]byte, 0, 64)
 	},
 }
 

@@ -10,8 +10,8 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog/log"
-	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
+	"github.com/zeebo/xxh3"
 	"io"
 	"math"
 	"math/rand/v2"
@@ -50,7 +50,7 @@ type Entry struct {
 func (e *Entry) Init() *Entry {
 	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
 	e.payload = &atomic.Pointer[[]byte]{}
-	payload := make([]byte, 0, 256)
+	payload := make([]byte, 0, 8)
 	e.payload.Store(&payload)
 	return e
 }
@@ -71,8 +71,8 @@ func NewEntryFromField(
 	e := &Entry{
 		key:          key,
 		shard:        shard,
-		payload:      &atomic.Pointer[[]byte]{},
 		rule:         rule,
+		payload:      &atomic.Pointer[[]byte]{},
 		lruListElem:  &atomic.Pointer[list.Element[*Entry]]{},
 		revalidator:  revalidator,
 		isCompressed: isCompressedInt,
@@ -141,7 +141,10 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	queries, queriesReleaser := parseQuery(payloadQuery) // here, we are referring to the same query buffer which used in payload which have been mentioned before
 	defer queriesReleaser()                              // this is really reduce memory usage and GC pressure
 
-	return entry.calculateAndSetUpKeys(queries, payloadHeaders), entry.Release, nil
+	filteredQueries := entry.filteredAndSortedKeyQueriesInPlace(queries)
+	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(payloadHeaders)
+
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
 }
 
 // Release used as a Releaser and returns buffers back to pools.
@@ -162,30 +165,34 @@ func (e *Entry) Release() {
 }
 
 func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]byte) *Entry {
-	mainBuf := bytebufferpool.Get()
-	defer func() {
-		mainBuf.Reset()
-		bytebufferpool.Put(mainBuf)
-	}()
-
+	l := 0
 	for _, pair := range filteredQueries {
-		if _, err := mainBuf.Write(pair[0]); err != nil {
-			log.Error().Err(err).Msg("failed to write query key")
-		}
-		if _, err := mainBuf.Write(pair[1]); err != nil {
-			log.Error().Err(err).Msg("failed to write query value")
-		}
+		l += len(pair[0]) + len(pair[1])
 	}
 	for _, pair := range filteredHeaders {
-		if _, err := mainBuf.Write(pair[0]); err != nil {
-			log.Error().Err(err).Msg("failed to write header key")
-		}
-		if _, err := mainBuf.Write(pair[1]); err != nil {
-			log.Error().Err(err).Msg("failed to write header value")
-		}
+		l += len(pair[0]) + len(pair[1])
+	}
+	buf := make([]byte, 0, l)
+	for _, pair := range filteredQueries {
+		buf = append(buf, pair[0]...)
+		buf = append(buf, pair[1]...)
+	}
+	for _, pair := range filteredHeaders {
+		buf = append(buf, pair[0]...)
+		buf = append(buf, pair[1]...)
 	}
 
-	e.key = hash(mainBuf)
+	hasher := hasherPool.Get().(*xxh3.Hasher)
+	defer func() {
+		hasher.Reset()
+		hasherPool.Put(hasher)
+	}()
+	if _, err := hasher.Write(buf); err != nil {
+		panic(err)
+	}
+
+	//e.key = xxh3.Hash(buf)
+	e.key = hasher.Sum64()
 	e.shard = sharded.MapShardKey(e.key)
 
 	return e
@@ -195,7 +202,6 @@ func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
 }
 
-// SetPayload packs and gzip-compresses the entire payload: Path, Query, Status, Headers, Body.
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, Status, ResponseHeaders, Body.
 func (e *Entry) SetPayload(
 	path, query []byte,
@@ -207,92 +213,112 @@ func (e *Entry) SetPayload(
 	numQueryHeaders := len(queryHeaders)
 	numResponseHeaders := len(headers)
 
+	// === 1) Calculate total size ===
+	total := 0
+	total += 4 + len(path)
+	total += 4 + len(query)
+	total += 4
+	for _, kv := range queryHeaders {
+		total += 4 + len(kv[0]) + 4 + len(kv[1])
+	}
+	total += 4
+	total += 4
+	for _, kv := range headers {
+		total += 4 + len(kv[0]) + 4 + 4 + len(kv[1])
+	}
+	total += 4 + len(body)
+
+	// === 2) Allocate ===
+	payloadBuf := make([]byte, 0, total)
+	offset := 0
+
 	var scratch [4]byte
-	buf := bytebufferpool.Get()
-	defer func() {
-		buf.Reset()
-		bytebufferpool.Put(buf)
-	}()
 
-	// --- Path
+	// === 3) Write ===
+
+	// Path
+
 	binary.LittleEndian.PutUint32(scratch[:], uint32(len(path)))
-	buf.Write(scratch[:])
-	buf.Write(path)
+	payloadBuf = append(payloadBuf, scratch[:]...)
+	payloadBuf = append(payloadBuf, path...)
+	offset += len(path)
 
-	// --- Query
+	// Query
 	binary.LittleEndian.PutUint32(scratch[:], uint32(len(query)))
-	buf.Write(scratch[:])
-	buf.Write(query)
+	payloadBuf = append(payloadBuf, scratch[:]...)
+	payloadBuf = append(payloadBuf, query...)
+	offset += len(query)
 
-	// --- QueryHeaders
+	// QueryHeaders
 	binary.LittleEndian.PutUint32(scratch[:], uint32(numQueryHeaders))
-	buf.Write(scratch[:])
+	payloadBuf = append(payloadBuf, scratch[:]...)
 	for _, kv := range queryHeaders {
 		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[0])))
-		buf.Write(scratch[:])
-		buf.Write(kv[0])
+		payloadBuf = append(payloadBuf, scratch[:]...)
+		payloadBuf = append(payloadBuf, kv[0]...)
+		offset += len(kv[0])
 
 		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[1])))
-		buf.Write(scratch[:])
-		buf.Write(kv[1])
+		payloadBuf = append(payloadBuf, scratch[:]...)
+		payloadBuf = append(payloadBuf, kv[1]...)
+		offset += len(kv[1])
 	}
 
-	// --- StatusCode
+	// Status
 	binary.LittleEndian.PutUint32(scratch[:], uint32(status))
-	buf.Write(scratch[:])
+	payloadBuf = append(payloadBuf, scratch[:]...)
 
-	// --- Response Headers
+	// ResponseHeaders
 	binary.LittleEndian.PutUint32(scratch[:], uint32(numResponseHeaders))
-	buf.Write(scratch[:])
-
+	payloadBuf = append(payloadBuf, scratch[:]...)
 	for _, kv := range headers {
 		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[0])))
-		buf.Write(scratch[:])
-		buf.Write(kv[0])
+		payloadBuf = append(payloadBuf, scratch[:]...)
+		payloadBuf = append(payloadBuf, kv[0]...)
+		offset += len(kv[0])
 
-		// Для совместимости с форматом: пишем количество значений на ключ (у тебя всегда 1)
-		binary.LittleEndian.PutUint32(scratch[:], 1)
-		buf.Write(scratch[:])
-
+		binary.LittleEndian.PutUint32(scratch[:], uint32(1))
+		payloadBuf = append(payloadBuf, scratch[:]...)
 		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[1])))
-		buf.Write(scratch[:])
-		buf.Write(kv[1])
+		payloadBuf = append(payloadBuf, scratch[:]...)
+		payloadBuf = append(payloadBuf, kv[1]...)
+		offset += len(kv[1])
 	}
 
-	// --- Body
+	// Body
 	binary.LittleEndian.PutUint32(scratch[:], uint32(len(body)))
-	buf.Write(scratch[:])
-	buf.Write(body)
+	payloadBuf = append(payloadBuf, scratch[:]...)
+	payloadBuf = append(payloadBuf, body...)
+	offset += len(body)
 
-	// --- Compress if needed
-	if e.rule.Gzip.Enabled && buf.Len() >= e.rule.Gzip.Threshold {
-		gzipper := GzipWriterPool.Get().(*gzip.Writer)
-		defer GzipWriterPool.Put(gzipper)
-
-		bufIn := GzipBufferPool.Get().(*bytes.Buffer)
-		defer GzipBufferPool.Put(bufIn)
-		bufIn.Reset()
-		gzipper.Reset(bufIn)
-
-		_, err := gzipper.Write(buf.Bytes())
-		closeErr := gzipper.Close()
-
+	// === 4) Compress if needed ===
+	if e.rule.Gzip.Enabled && total >= e.rule.Gzip.Threshold {
+		var compressed bytes.Buffer
+		gzipWriter := gzip.NewWriter(&compressed)
+		_, err := gzipWriter.Write(payloadBuf)
+		closeErr := gzipWriter.Close()
 		if err == nil && closeErr == nil {
-			payload := e.payload.Load()
-			*payload = append(*payload, bufIn.Bytes()...)
-			e.payload.Store(payload)
-		} else {
-			payload := e.payload.Load()
-			*payload = append(*payload, buf.Bytes()...)
-			e.payload.Store(payload)
+			bufCopy := make([]byte, compressed.Len())
+			copy(bufCopy, compressed.Bytes())
+			e.payload.Store(&bufCopy)
+			atomic.StoreInt64(&e.isCompressed, 1)
+			return
 		}
-
-		atomic.StoreInt64(&e.isCompressed, 1)
-	} else {
-		payload := e.payload.Load()
-		*payload = append(*payload, buf.Bytes()...)
-		e.payload.Store(payload)
 	}
+
+	// === 5) Store raw ===
+	payloadBuf = payloadBuf[:]
+	e.payload.Store(&payloadBuf)
+	atomic.StoreInt64(&e.isCompressed, 0)
+
+	//if status > 0 {
+	//	npath, nquery, _, _, nbody, _, _, err := e.Payload()
+	//	if err != nil {
+	//		panic(err)
+	//	}
+	//
+	//	fmt.Printf("path=%v, query=%v, body=%v\n", string(npath), string(nquery), string(nbody))
+	//}
 }
 
 var emptyFn = func() {}
@@ -390,7 +416,11 @@ func (e *Entry) Payload() (
 	// --- Body
 	bodyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	body = rawPayload[offset : offset+int(bodyLen)]
+	if offset+int(bodyLen) > len(rawPayload) {
+		fmt.Printf("payload: '%v', part: '%v'\n", string(rawPayload), string(rawPayload[offset:]))
+		panic("found")
+	}
+	body = rawPayload[offset:]
 
 	releaseFn = func() {
 		queryHeaders = queryHeaders[:0]
@@ -425,7 +455,8 @@ func (e *Entry) WillUpdateAt() int64 {
 func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	b = bytes.TrimLeft(b, "?")
 
-	var query = pools.KeyValueSlicePool.Get().([][2][]byte)
+	queries = pools.KeyValueSlicePool.Get().([][2][]byte)
+	queries = queries[:0]
 
 	type state struct {
 		kIdx   int
@@ -437,21 +468,45 @@ func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	s := state{}
 	for idx, bt := range b {
 		if bt == '&' {
-			if s.kFound && s.vFound {
-				query = append(query, [2][]byte{b[s.kIdx:s.vIdx], b[s.vIdx:idx]})
-				s.vIdx = 0
-				s.vFound = false
+			if s.kFound {
+				var key, val []byte
+				if s.vFound {
+					key = b[s.kIdx : s.vIdx-1]
+					val = b[s.vIdx:idx]
+				} else {
+					key = b[s.kIdx:idx]
+					val = []byte{}
+				}
+				queries = append(queries, [2][]byte{key, val})
 			}
 			s.kIdx = idx + 1
 			s.kFound = true
-			continue
-		} else if bt == '=' {
+			s.vIdx = 0
+			s.vFound = false
+		} else if bt == '=' && !s.vFound {
 			s.vIdx = idx + 1
 			s.vFound = true
+		} else if !s.kFound {
+			s.kIdx = idx
+			s.kFound = true
 		}
 	}
-	return query, func() {
-		pools.KeyValueSlicePool.Put(query)
+
+	if s.kFound {
+		var key, val []byte
+		if s.vFound {
+			key = b[s.kIdx : s.vIdx-1]
+			val = b[s.vIdx:]
+		} else {
+			key = b[s.kIdx:]
+			val = []byte{}
+		}
+		queries = append(queries, [2][]byte{key, val})
+	}
+
+	return queries, func() {
+		queries = queries[:0]
+		pools.KeyValueSlicePool.Put(queries)
 	}
 }
 
@@ -464,7 +519,6 @@ func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs 
 	if cap(filtered) == 0 {
 		return filtered, releaseFn
 	}
-
 	r.QueryArgs().All()(func(key, value []byte) bool {
 		for _, ak := range e.rule.CacheKey.QueryBytes {
 			if bytes.HasPrefix(key, ak) {
@@ -502,6 +556,58 @@ func (e *Entry) getFilteredAndSortedKeyHeaders(r *fasthttp.RequestCtx) (kvPairs 
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
 	})
 	return filtered, releaseFn
+}
+
+// filteredAndSortedKeyQueriesInPlace - filters an input slice, be careful!
+func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries [][2][]byte) (kvPairs [][2][]byte) {
+	filtered := queries[:0]
+
+	allowed := e.rule.CacheKey.QueryBytes
+	for _, pair := range queries {
+		key := pair[0]
+		keep := false
+		for _, ak := range allowed {
+			if bytes.HasPrefix(key, ak) {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			filtered = append(filtered, pair)
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
+	})
+
+	return filtered
+}
+
+// filteredAndSortedKeyHeadersInPlace - filters an input slice, be careful!
+func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers [][2][]byte) (kvPairs [][2][]byte) {
+	filtered := headers[:0]
+	allowed := e.rule.CacheKey.HeadersBytes
+
+	for _, pair := range headers {
+		key := pair[0]
+		keep := false
+		for _, ak := range allowed {
+			if bytes.EqualFold(key, ak) {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			filtered = append(filtered, pair)
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
+	})
+
+	return filtered
 }
 
 // SetLruListElement sets the LRU list element pointer.
@@ -566,4 +672,54 @@ func (e *Entry) Revalidate() error {
 	}
 
 	return nil
+}
+
+func (e *Entry) DumpPayload() {
+	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
+	defer releaseFn()
+	if err != nil {
+		log.Error().Err(err).Msg("[dump] failed to unpack payload")
+		return
+	}
+
+	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
+	fmt.Printf("Key:          %d\n", e.key)
+	fmt.Printf("Shard:        %d\n", e.shard)
+	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
+	fmt.Printf("WillUpdateAt: %s\n", time.Unix(0, e.WillUpdateAt()).Format(time.RFC3339Nano))
+	fmt.Printf("----------------------------------\n")
+
+	fmt.Printf("Path:   %q\n", string(path))
+	fmt.Printf("Query:  %q\n", string(query))
+	fmt.Printf("Status: %d\n", status)
+
+	fmt.Printf("\nQuery Headers:\n")
+	if len(queryHeaders) == 0 {
+		fmt.Println("  (none)")
+	} else {
+		for i, kv := range queryHeaders {
+			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
+		}
+	}
+
+	fmt.Printf("\nResponse Headers:\n")
+	if len(responseHeaders) == 0 {
+		fmt.Println("  (none)")
+	} else {
+		for i, kv := range responseHeaders {
+			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
+		}
+	}
+
+	fmt.Printf("\nBody (%d bytes):\n", len(body))
+	if len(body) > 0 {
+		const maxLen = 500
+		if len(body) > maxLen {
+			fmt.Printf("  %q ... [truncated, total %d bytes]\n", body[:maxLen], len(body))
+		} else {
+			fmt.Printf("  %q\n", body)
+		}
+	}
+
+	fmt.Println("==================================")
 }

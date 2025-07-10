@@ -20,9 +20,9 @@ import (
 var (
 	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
 	RuleNotFoundError = errors.New("rule not found")
-	PathInterner      = intern.NewInterner(8)
-	HeaderKeyInterner = intern.NewInterner(8)
-	QueryKeyInterner  = intern.NewInterner(16)
+	PathInterner      = intern.NewInterner(64)
+	HeaderKeyInterner = intern.NewInterner(64)
+	QueryKeyInterner  = intern.NewInterner(256)
 )
 
 type Request struct {
