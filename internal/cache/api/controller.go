@@ -104,20 +104,10 @@ func NewCacheController(
 func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]byte, releaseFn func()) {
 	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
 	r.Request.Header.All()(func(key []byte, value []byte) bool {
-		k := pools.EntryQueryHeadersPool.Get().([]byte)
-		v := pools.EntryQueryHeadersPool.Get().([]byte)
-		copy(k, key)
-		copy(v, value)
-		headers = append(headers, [2][]byte{k, v})
+		headers = append(headers, [2][]byte{key, value})
 		return true
 	})
 	return headers, func() {
-		for _, kv := range headers {
-			kv[0] = kv[0][:0]
-			kv[1] = kv[1][:0]
-			pools.EntryQueryHeadersPool.Put(kv[0])
-			pools.EntryQueryHeadersPool.Put(kv[1])
-		}
 		headers = headers[:0]
 		pools.KeyValueSlicePool.Put(headers)
 	}

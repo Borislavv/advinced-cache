@@ -9,9 +9,8 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/list"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
-	"github.com/rs/zerolog/log"
-	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
+	"github.com/zeebo/xxh3"
 	"io"
 	"math"
 	"math/rand/v2"
@@ -141,7 +140,10 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	queries, queriesReleaser := parseQuery(payloadQuery) // here, we are referring to the same query buffer which used in payload which have been mentioned before
 	defer queriesReleaser()                              // this is really reduce memory usage and GC pressure
 
-	return entry.calculateAndSetUpKeys(queries, payloadHeaders), entry.Release, nil
+	filteredQueries := entry.filteredAndSortedKeyQueriesInPlace(queries)
+	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(payloadHeaders)
+
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
 }
 
 // Release used as a Releaser and returns buffers back to pools.
@@ -162,30 +164,25 @@ func (e *Entry) Release() {
 }
 
 func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]byte) *Entry {
-	mainBuf := bytebufferpool.Get()
-	defer func() {
-		mainBuf.Reset()
-		bytebufferpool.Put(mainBuf)
-	}()
+	length := 0
+	for _, kv := range filteredQueries {
+		length += len(kv[0]) + len(kv[1])
+	}
+	for _, kv := range filteredHeaders {
+		length += len(kv[0]) + len(kv[1])
+	}
+	buf := make([]byte, 0, length)
 
 	for _, pair := range filteredQueries {
-		if _, err := mainBuf.Write(pair[0]); err != nil {
-			log.Error().Err(err).Msg("failed to write query key")
-		}
-		if _, err := mainBuf.Write(pair[1]); err != nil {
-			log.Error().Err(err).Msg("failed to write query value")
-		}
+		buf = append(buf, pair[0]...)
+		buf = append(buf, pair[1]...)
 	}
 	for _, pair := range filteredHeaders {
-		if _, err := mainBuf.Write(pair[0]); err != nil {
-			log.Error().Err(err).Msg("failed to write header key")
-		}
-		if _, err := mainBuf.Write(pair[1]); err != nil {
-			log.Error().Err(err).Msg("failed to write header value")
-		}
+		buf = append(buf, pair[0]...)
+		buf = append(buf, pair[1]...)
 	}
 
-	e.key = hash(mainBuf)
+	e.key = xxh3.Hash(buf)
 	e.shard = sharded.MapShardKey(e.key)
 
 	return e
@@ -208,11 +205,7 @@ func (e *Entry) SetPayload(
 	numResponseHeaders := len(headers)
 
 	var scratch [4]byte
-	buf := bytebufferpool.Get()
-	defer func() {
-		buf.Reset()
-		bytebufferpool.Put(buf)
-	}()
+	var buf bytes.Buffer
 
 	// --- Path
 	binary.LittleEndian.PutUint32(scratch[:], uint32(len(path)))
@@ -400,6 +393,57 @@ func (e *Entry) Payload() (
 	}
 
 	return
+}
+
+func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries [][2][]byte) (kvPairs [][2][]byte) {
+	filtered := queries[:0]
+
+	allowed := e.rule.CacheKey.QueryBytes
+	for _, pair := range queries {
+		key := pair[0]
+		keep := false
+		for _, ak := range allowed {
+			if bytes.HasPrefix(key, ak) {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			filtered = append(filtered, pair)
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
+	})
+
+	return filtered
+}
+
+// filteredAndSortedKeyHeadersInPlace - filters an input slice, be careful!
+func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers [][2][]byte) (kvPairs [][2][]byte) {
+	filtered := headers[:0]
+	allowed := e.rule.CacheKey.HeadersBytes
+
+	for _, pair := range headers {
+		key := pair[0]
+		keep := false
+		for _, ak := range allowed {
+			if bytes.EqualFold(key, ak) {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			filtered = append(filtered, pair)
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
+	})
+
+	return filtered
 }
 
 func (e *Entry) Rule() *config.Rule {
