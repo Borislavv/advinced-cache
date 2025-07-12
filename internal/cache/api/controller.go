@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
@@ -30,14 +31,15 @@ var (
 	  "message": "` + string(messagePlaceholder) + `"
 	}`)
 	messagePlaceholder = []byte("${message}")
-
-	hdrLastModified = []byte("Last-Modified")
+	hdrLastModified    = []byte("Last-Modified")
 )
 
 // Buffered channel for request durations (used only if debug enabled)
 var (
 	count    = &atomic.Int64{} // Num
 	duration = &atomic.Int64{} // UnixNano
+	fnd      = &atomic.Int64{}
+	notFnd   = &atomic.Int64{}
 )
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
@@ -66,42 +68,79 @@ func NewCacheController(
 	return c
 }
 
-// Index is the main HTTP handler for /api/v1/cache.
+func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]byte, releaseFn func()) {
+	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
+	r.Request.Header.All()(func(key []byte, value []byte) bool {
+		headers = append(headers, [2][]byte{key, value})
+		return true
+	})
+	return headers, func() {
+		headers = headers[:0]
+		pools.KeyValueSlicePool.Put(headers)
+	}
+}
+
+// Index is the main HTTP handler.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
-	// Parse request parameters.
-	req, err := model.NewRequestFromFasthttp(c.cfg.Cache, r)
+	entry, entryReleaser, err := model.NewEntry(c.cfg.Cache, r)
 	if err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
 
-	// Try to get response from cache.
-	resp, found := c.cache.Get(req)
+	var (
+		status   int
+		headers  [][2][]byte
+		body     []byte
+		releaser func()
+	)
+
+	value, found := c.cache.Get(entry)
 	if !found {
-		// On cache miss, get data from upstream backend and save in cache.
-		computed, err := c.backend.Fetch(c.ctx, req)
+		notFnd.Add(1)
+
+		path := r.Path()
+		queryString := r.QueryArgs().QueryString()
+		queryHeaders, queryReleaser := c.queryHeaders(r)
+		defer queryReleaser()
+
+		status, headers, body, releaser, err = c.backend.Fetch(path, queryString, queryHeaders)
+		defer releaser()
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
-		resp = computed
-		c.cache.Set(resp)
-	}
+		entry.SetPayload(path, queryString, queryHeaders, headers, body, status)
 
-	// Write status, headers, and body from the cached (or fetched) response.
-	data := resp.Data()
-	r.Response.SetStatusCode(data.StatusCode())
-	for key, vv := range data.Headers() {
-		for _, value := range vv {
-			r.Response.Header.Add(key, value)
+		entry.SetRevalidator(c.backend.RevalidatorMaker())
+		c.cache.Set(entry)
+		value = entry
+	} else {
+		fnd.Add(1)
+		defer entryReleaser() // release the entry only on the case when existing entry was found in cache,
+		// otherwise created entry will escape to heap (link must be alive while entry in cache)
+
+		_, _, _, headers, body, status, releaser, err = value.Payload()
+		defer releaser()
+		if err != nil {
+			c.respondThatServiceIsTemporaryUnavailable(err, r)
+			return
 		}
 	}
 
+	// Write status, headers, and body from the cached (or fetched) response.
+	r.Response.SetStatusCode(status)
+	for _, kv := range headers {
+		r.Response.Header.AddBytesKV(kv[0], kv[1])
+	}
+
 	// Set up Last-Modified header
-	r.Response.Header.SetBytesKV(hdrLastModified, resp.RevalidatedAt().AppendFormat(nil, http.TimeFormat))
-	if _, err := serverutils.Write(data.Body(), r); err != nil {
+	c.setLastModifiedHeader(r, value, status)
+
+	// Write body
+	if _, err = serverutils.Write(body, r); err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
@@ -118,6 +157,20 @@ func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ct
 	ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
 	if _, err = serverutils.Write(c.resolveMessagePlaceholder(serviceUnavailableResponseBytes, err), ctx); err != nil {
 		log.Err(err).Msg("failed to write into *fasthttp.RequestCtx")
+	}
+}
+
+func (c *CacheController) setLastModifiedHeader(r *fasthttp.RequestCtx, entry *model.Entry, status int) {
+	if status == http.StatusOK {
+		r.Request.Header.SetBytesKV(
+			hdrLastModified,
+			time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat),
+		)
+	} else {
+		r.Request.Header.SetBytesKV(
+			hdrLastModified,
+			time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat),
+		)
 	}
 }
 
@@ -175,7 +228,7 @@ func (c *CacheController) logAndReset() {
 			Str("avgDuration", avg)
 	}
 
-	logEvent.Msgf("[controller][5s] served %d requests (rps: %s, avgDuration: %s)", cnt, rps, avg)
+	logEvent.Msgf("[controller][5s] served %d requests (rps: %s, avgDuration: %s), hits: %d, misses: %d,", cnt, rps, avg, fnd.Load(), notFnd.Load())
 
 	count.Store(0)
 	duration.Store(0)

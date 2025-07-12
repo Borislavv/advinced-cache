@@ -6,13 +6,17 @@ cache:
     level: "info" # Any zerolog.Level.
     stats: true   # Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
 
+  forceGC:
+    gcInterval: "10s"
+    freeOsMemInterval: "30s"
+
   lifetime:
     max_req_dur: "100ms"                # If a request lifetime is longer than 100ms then request will be canceled by context.
     escape_max_req_dur: "X-Google-Bot"  # If the header exists the timeout above will be skipped.
 
   upstream:
     url: "https://seo-master.lux.kube.xbet.lan" # downstream reverse proxy host:port
-    rate: 160                                   # Rate limiting reqs to backend per second.
+    rate: 50                                   # Rate limiting reqs to backend per second.
     timeout: "10s"                              # Timeout for requests to backend.
 
   preallocate:
@@ -27,8 +31,8 @@ cache:
     size: 32212254720 # 32GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
-    ttl: "1h"
-    error_ttl: "15m"
+    ttl: "12h"
+    error_ttl: "3h"
     rate: 1000        # Rate limiting reqs to backend per second.
     scan_rate: 10000  # Rate limiting of num scans items per second.
     beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
@@ -44,6 +48,9 @@ cache:
 
   rules:
     - path: "/api/v2/pagedata"
+      gzip:
+        enabled: false
+        threshold: 1024
       ttl: "20m"
       error_ttl: "5m"
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
@@ -67,6 +74,9 @@ cache:
           - Server-Timing
 
     - path: "/api/v1/pagecontent"
+      gzip:
+        enabled: true
+        threshold: 1024
       ttl: "36h"
       error_ttl: "3h"
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.

@@ -6,6 +6,10 @@ cache:
     level: "info" # Any zerolog.Level.
     stats: true   # Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
 
+  forceGC:
+    gcInterval: "10s"
+    freeOsMemInterval: "30s"
+
   lifetime:
     max_req_dur: "100ms" # If a request lifetime is longer than 100ms then request will be canceled by context.
     escape_max_req_dur: "X-Target-Bot" # If the header exists the timeout above will be skipped.
@@ -44,6 +48,9 @@ cache:
 
   rules:
     - path: "/api/v2/pagedata"
+      gzip:
+        enabled: true
+        threshold: 1024
       ttl: "12h"
       error_ttl: "1h"
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
@@ -60,6 +67,9 @@ cache:
           - Vary               # Если ты варьируешь по Accept-Encoding или Accept-Language.
 
     - path: "/api/v1/pagecontent"
+      gzip:
+        enabled: true
+        threshold: 1024
       ttl: "36h"
       error_ttl: "3h"
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.

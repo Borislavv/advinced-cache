@@ -41,50 +41,67 @@ func (shard *Shard[V]) Len() int64 {
 // Set inserts or updates a value by key, resets refCount, and updates counters.
 // Returns a releaser for the inserted value.
 func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64) {
-	shard.Lock()
-	var memDiff int64
-	found, ok := shard.items[key]
-	if ok {
-		memDiff = value.Weight() - found.Weight()
+	shard.RLock()
+	entry, isHit := shard.items[key]
+	shard.RUnlock()
+
+	if isHit {
+		if !entry.IsSameFingerprint(value.Fingerprint()) {
+			// hash collision, just rewrite by new data
+			shard.Lock()
+			shard.items[key] = value
+			shard.Unlock()
+			atomic.AddInt64(&shard.len, 0)
+			atomic.AddInt64(&shard.mem, value.Weight()-entry.Weight())
+			return
+		}
 	} else {
-		memDiff = value.Weight()
+		// insert new element due to it was not found in cache
+		shard.Lock()
+		shard.items[key] = value
+		shard.Unlock()
+		atomic.AddInt64(&shard.len, 1)
+		atomic.AddInt64(&shard.mem, value.Weight())
+		return
 	}
-	shard.items[key] = value
-	shard.Unlock()
 
-	takenMem = value.Weight()
-	atomic.AddInt64(&shard.len, 1)
-	atomic.AddInt64(&shard.mem, memDiff)
-
-	// Return a releaser for this value (for the user to release later).
-	return takenMem
+	// found the same, no changes has been made
+	return 0
 }
 
 // Get retrieves a value and returns a releaser for it, incrementing its refCount.
 // Returns (value, releaser, true) if found; otherwise (zero, nil, false).
-func (shard *Shard[V]) Get(key uint64) (val V, isHit bool) {
+func (shard *Shard[V]) Get(entry V) (val V, isHit bool) {
 	shard.RLock()
-	value, ok := shard.items[key]
+	value, ok := shard.items[entry.MapKey()]
 	shard.RUnlock()
-	return value, ok
+
+	if ok && value.IsSameFingerprint(entry.Fingerprint()) {
+		return value, ok
+	}
+
+	// not found or hash collision
+	return val, false
 }
 
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
 // Returns (memory_freed, pointer_to_list_element, was_found).
 func (shard *Shard[V]) Remove(key uint64) (freed int64, isHit bool) {
 	shard.Lock()
+	defer shard.Unlock()
 	v, ok := shard.items[key]
 	if ok {
 		delete(shard.items, key)
-		shard.Unlock()
 
 		weight := v.Weight()
 		atomic.AddInt64(&shard.len, -1)
 		atomic.AddInt64(&shard.mem, -weight)
 
+		// return all buffers back to pools
+		v.Release() // it's safe due to we are here alone, no one else could be here inside positive
+
 		return weight, true
 	}
-	shard.Unlock()
 
 	return 0, false
 }

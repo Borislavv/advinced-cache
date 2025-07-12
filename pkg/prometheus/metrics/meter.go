@@ -10,9 +10,9 @@ import (
 
 // Meter defines methods for recording application metrics.
 type Meter interface {
-	IncTotal(path, method, status string)
-	IncStatus(path, method, status string)
-	NewResponseTimeTimer(path, method string) *Timer
+	IncTotal(path, method, status []byte)
+	IncStatus(path, method, status []byte)
+	NewResponseTimeTimer(path, method []byte) *Timer
 	FlushResponseTimeTimer(t *Timer)
 	SetCacheLength(count int64)
 	SetCacheMemory(bytes int64)
@@ -36,12 +36,12 @@ func init() {
 }
 
 // IncTotal increments total requests or responses depending on status.
-func (m *Metrics) IncTotal(path, method, status string) {
+func (m *Metrics) IncTotal(path, method, status []byte) {
 	name := keyword.TotalHttpRequestsMetricName
-	if status != "" {
+	if len(status) > 0 {
 		name = keyword.TotalHttpResponsesMetricName
 	}
-	buf := make([]byte, 0, 48)
+	buf := make([]byte, 0, 128)
 
 	buf = append(buf, name...)
 	buf = append(buf, `{path="`...)
@@ -50,7 +50,7 @@ func (m *Metrics) IncTotal(path, method, status string) {
 	buf = append(buf, method...)
 	buf = append(buf, `"`...)
 
-	if status != "" {
+	if len(status) > 0 {
 		buf = append(buf, `,status="`...)
 		buf = append(buf, status...)
 		buf = append(buf, `"`...)
@@ -62,9 +62,8 @@ func (m *Metrics) IncTotal(path, method, status string) {
 }
 
 // IncStatus increments a counter for HTTP response statuses.
-func (m *Metrics) IncStatus(path, method, status string) {
-	buf := make([]byte, 0, 48)
-
+func (m *Metrics) IncStatus(path, method, status []byte) {
+	buf := make([]byte, 0, 128)
 	buf = append(buf, keyword.HttpResponseStatusesMetricName...)
 	buf = append(buf, `{path="`...)
 	buf = append(buf, path...)
@@ -95,8 +94,8 @@ type Timer struct {
 }
 
 // NewResponseTimeTimer creates a Timer for measuring response time of given path and method.
-func (m *Metrics) NewResponseTimeTimer(path, method string) *Timer {
-	buf := make([]byte, 0, 48)
+func (m *Metrics) NewResponseTimeTimer(path, method []byte) *Timer {
+	buf := make([]byte, 0, 128)
 	buf = append(buf, keyword.HttpResponseTimeMsMetricName...)
 	buf = append(buf, `{path="`...)
 	buf = append(buf, path...)

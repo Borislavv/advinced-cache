@@ -12,19 +12,22 @@ type Storage interface {
 
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
-	Get(req *model.Request) (resp *model.Response, isHit bool)
+	Get(*model.Entry) (entry *model.Entry, isHit bool)
 
-	// GetRandom attempts to retrieve any one cached response.
-	GetRandom() (resp *model.Response, isFound bool)
+	// GetRand returns a random elem from the map.
+	GetRand() (*model.Entry, bool)
 
 	// Set stores a new response in the cache and returns a releaser for managing resource lifetime.
-	Set(resp *model.Response)
+	Set(entry *model.Entry)
 
 	// Remove is removes one element.
-	Remove(req *model.Response) (freedBytes int64, isHit bool)
+	Remove(req *model.Entry) (freedBytes int64, isHit bool)
 
 	// Stat returns bytes usage and num of items in storage.
 	Stat() (bytes int64, length int64)
+
+	// Len - return stored value (refreshes every 100ms).
+	Len() int64
 
 	// Mem - return stored value (refreshes every 100ms).
 	Mem() int64

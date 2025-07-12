@@ -1,31 +1,37 @@
 package lfu
 
-import "math/rand/v2"
+import (
+	"math/rand/v2"
+	"sync/atomic"
+)
 
-// doorkeeper is a simple Bloom filter.
 type doorkeeper struct {
 	bits  []uint64
 	seeds [2]uint64
+	mask  uint64
 }
 
 func newDoorkeeper(capacity int) *doorkeeper {
+	size := capacity / 64
 	return &doorkeeper{
-		bits:  make([]uint64, capacity/64),
+		bits:  make([]uint64, size),
 		seeds: [2]uint64{rand.Uint64(), rand.Uint64()},
+		mask:  uint64(size*64 - 1),
 	}
 }
 
 func (d *doorkeeper) Allow(key uint64) bool {
-	h1 := hash64(d.seeds[0], key)
-	h2 := hash64(d.seeds[1], key)
-	p1 := h1 % uint64(len(d.bits)*64)
-	p2 := h2 % uint64(len(d.bits)*64)
-	b1 := (d.bits[p1/64] & (1 << (p1 % 64))) != 0
-	b2 := (d.bits[p2/64] & (1 << (p2 % 64))) != 0
+	h1 := hash64(d.seeds[0], key) & d.mask
+	h2 := hash64(d.seeds[1], key) & d.mask
+
+	b1 := (atomic.LoadUint64(&d.bits[h1/64]) & (1 << (h1 % 64))) != 0
+	b2 := (atomic.LoadUint64(&d.bits[h2/64]) & (1 << (h2 % 64))) != 0
+
 	if b1 && b2 {
 		return true
 	}
-	d.bits[p1/64] |= 1 << (p1 % 64)
-	d.bits[p2/64] |= 1 << (p2 % 64)
+
+	atomic.OrUint64(&d.bits[h1/64], 1<<(h1%64))
+	atomic.OrUint64(&d.bits[h2/64], 1<<(h2%64))
 	return false
 }

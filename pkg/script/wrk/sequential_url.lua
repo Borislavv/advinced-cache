@@ -1,7 +1,7 @@
 -- sequential_url.lua
 
 -- Диапазон ключей
-local i_min, i_max = 1, 1000000
+local i_min, i_max = 1, 10000000
 local i = i_min
 
 -- Фиксированный язык

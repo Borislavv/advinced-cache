@@ -3,15 +3,12 @@ package advancedcache
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"net/http"
-	"sync/atomic"
-	"time"
 )
 
 var _ caddy.Module = (*CacheMiddleware)(nil)
@@ -55,52 +52,53 @@ func (middleware *CacheMiddleware) Provision(ctx caddy.Context) error {
 }
 
 func (middleware *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	from := time.Now()
+	//from := time.Now()
 
 	// Build request (return error on rule missing for current path)
-	req, err := model.NewRequestFromNetHttp(middleware.cfg, r)
-	if err != nil {
-		// If path does not match then process request manually without cache
-		return next.ServeHTTP(w, r)
-	}
+	//req, err := model.NewRequestFromNetHttp(middleware.cfg, r)
+	//if err != nil {
+	//	// If path does not match then process request manually without cache
+	//	return next.ServeHTTP(w, r)
+	//}
 
-	resp, isHit := middleware.store.Get(req)
-	if !isHit {
-		captured := newCaptureRW()
+	//resp, isHit := middleware.store.Get(req)
+	//if !isHit {
+	//	captured := newCaptureRW()
+	//
+	//	// Handle request manually due to store it
+	//	if srvErr := next.ServeHTTP(captured, r); srvErr != nil {
+	//		captured.header = make(http.Header)
+	//		captured.body.Reset()
+	//		captured.status = http.StatusServiceUnavailable
+	//		captured.WriteHeader(captured.status)
+	//		_, _ = captured.Write(serviceTemporaryUnavailableBody)
+	//	}
+	//
+	//	// Build new response
+	//	data := model.NewData(req.Rule(), captured.status, captured.header, captured.body.Bytes())
+	//	resp, _ = model.NewResponse(data, req, middleware.cfg, middleware.backend.RevalidatorMaker(req))
+	//	middleware.store.Set(resp)
+	//}
+	//
+	//// Apply custom http headers
+	//for key, vv := range resp.Data().Headers() {
+	//	for _, value := range vv {
+	//		w.Header().Add(key, value)
+	//	}
+	//}
+	//
+	//// Apply standard http headers
+	//w.Header().Add(contentTypeKey, applicationJsonValue)
+	//w.Header().Add(lastModifiedKey, resp.RevalidatedAt().Format(http.TimeFormat))
+	//w.WriteHeader(resp.Data().StatusCode())
+	//
+	//// Write response data
+	//_, _ = w.Write(resp.Data().Body())
 
-		// Handle request manually due to store it
-		if srvErr := next.ServeHTTP(captured, r); srvErr != nil {
-			captured.header = make(http.Header)
-			captured.body.Reset()
-			captured.status = http.StatusServiceUnavailable
-			captured.WriteHeader(captured.status)
-			_, _ = captured.Write(serviceTemporaryUnavailableBody)
-		}
-
-		// Build new response
-		data := model.NewData(req.Rule(), captured.status, captured.header, captured.body.Bytes())
-		resp, _ = model.NewResponse(data, req, middleware.cfg, middleware.backend.RevalidatorMaker(req))
-		middleware.store.Set(resp)
-	}
-
-	// Apply custom http headers
-	for key, vv := range resp.Data().Headers() {
-		for _, value := range vv {
-			w.Header().Add(key, value)
-		}
-	}
-
-	// Apply standard http headers
-	w.Header().Add(contentTypeKey, applicationJsonValue)
-	w.Header().Add(lastModifiedKey, resp.RevalidatedAt().Format(http.TimeFormat))
-	w.WriteHeader(resp.Data().StatusCode())
-
-	// Write response data
-	_, _ = w.Write(resp.Data().Body())
-
-	// Record the duration in debug mode for metrics.
-	atomic.AddInt64(&middleware.count, 1)
-	atomic.AddInt64(&middleware.duration, time.Since(from).Nanoseconds())
-
-	return err
+	//// Record the duration in debug mode for metrics.
+	//atomic.AddInt64(&middleware.count, 1)
+	//atomic.AddInt64(&middleware.duration, time.Since(from).Nanoseconds())
+	//
+	//return err
+	return nil
 }

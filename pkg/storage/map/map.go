@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/types"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ const ActiveShards uint64 = 2047 // 2047 active shards
 type Value interface {
 	types.Keyed
 	types.Sized
+	types.Released
 }
 
 // Map is a sharded concurrent map for high-performance caches.
@@ -54,8 +56,17 @@ func (smap *Map[V]) Set(value V) {
 
 // Get fetches a value and its releaser from the correct shard.
 // found==false means the value is absent.
-func (smap *Map[V]) Get(key uint64, shardKey uint64) (value V, found bool) {
-	return smap.shards[shardKey].Get(key)
+func (smap *Map[V]) Get(entry V) (value V, found bool) {
+	return smap.shards[entry.ShardKey()].Get(entry)
+}
+
+func (smap *Map[V]) Rnd() (value V, found bool) {
+	smap.shards[uint64(rand.Intn(int(ActiveShards)))].Walk(context.Background(), func(u uint64, v V) bool {
+		value = v
+		found = true
+		return false
+	}, false)
+	return
 }
 
 // Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.

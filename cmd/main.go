@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/internal/cache"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	config2 "github.com/Borislavv/advanced-cache/pkg/config"
@@ -11,13 +12,20 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
 	"go.uber.org/automaxprocs/maxprocs"
+	"net/http"
 	"runtime"
 	"time"
 )
 
+import _ "net/http/pprof"
+
 // Initializes environment variables from .env files and binds them using Viper.
 // This allows overriding any value via environment variables.
 func init() {
+	go func() {
+		fmt.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	// Load .env and .env.local files for configuration overrides.
 	if err := godotenv.Overload(".env", ".env.local"); err != nil {
 		panic(err)

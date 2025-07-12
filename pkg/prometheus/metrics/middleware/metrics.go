@@ -5,21 +5,20 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/valyala/fasthttp"
 	"strconv"
-	"unsafe"
 )
 
-var emptyStr = ""
+var emptyStr = []byte("")
 
 type PrometheusMetrics struct {
 	ctx   context.Context
 	meter metrics.Meter
-	codes [599]string
+	codes [599][]byte
 }
 
 func NewPrometheusMetrics(ctx context.Context, meter metrics.Meter) *PrometheusMetrics {
-	codes := [599]string{}
+	codes := [599][]byte{}
 	for code := 0; code < 599; code++ {
-		codes[code] = strconv.Itoa(code)
+		codes[code] = []byte(strconv.Itoa(code))
 	}
 	return &PrometheusMetrics{
 		ctx:   ctx,
@@ -33,17 +32,14 @@ func (m *PrometheusMetrics) Middleware(next fasthttp.RequestHandler) fasthttp.Re
 		pth := ctx.Path()
 		method := ctx.Method()
 
-		pathStr := *(*string)(unsafe.Pointer(&pth))
-		methodStr := *(*string)(unsafe.Pointer(&method))
-
-		timer := m.meter.NewResponseTimeTimer(pathStr, methodStr)
-		m.meter.IncTotal(pathStr, methodStr, emptyStr) // total requests (no status)
+		timer := m.meter.NewResponseTimeTimer(pth, method)
+		m.meter.IncTotal(pth, method, emptyStr) // total requests (no status)
 
 		next(ctx)
 
 		status := ctx.Response.StatusCode()
-		m.meter.IncStatus(pathStr, methodStr, m.codes[status])
-		m.meter.IncTotal(pathStr, methodStr, m.codes[status])
+		m.meter.IncStatus(pth, method, m.codes[status])
+		m.meter.IncTotal(pth, method, m.codes[status])
 		m.meter.FlushResponseTimeTimer(timer)
 	}
 }

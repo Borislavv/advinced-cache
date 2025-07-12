@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/internal/cache/server"
+	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
@@ -37,7 +38,7 @@ type Cache struct {
 	evictor    storage.Evictor
 	refresher  storage.Refresher
 	backend    repository.Backender
-	shardedMap *sharded.Map[*model.Response]
+	shardedMap *sharded.Map[*model.Entry]
 }
 
 // NewApp builds a new Cache app, wiring together db, repo, reader, and server.
@@ -45,12 +46,12 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Setup sharded map for high-concurrency cache db.
-	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Cache.Preallocate.PerShard)
 	backend := repository.NewBackend(cfg.Cache)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := storage.NewRefresher(ctx, cfg.Cache, balancer)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg.Cache, balancer, backend, tinyLFU, shardedMap)
+	refresher := storage.NewRefresher(ctx, cfg.Cache, balancer, db)
 	dumper := storage.NewDumper(cfg.Cache, shardedMap, db, backend)
 	evictor := storage.NewEvictor(ctx, cfg.Cache, db, balancer)
 	meter := metrics.New()
@@ -129,6 +130,7 @@ func (c *Cache) run() *Cache {
 	c.evictor.Run()
 	c.refresher.Run()
 	c.runMetricsWriter()
+	gc.Run(c.ctx, c.cfg.Cache)
 
 	return c
 }

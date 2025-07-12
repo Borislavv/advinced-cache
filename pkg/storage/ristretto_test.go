@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/rs/zerolog"
 	"runtime"
 	"testing"
@@ -35,16 +36,16 @@ func NewRistrettoStorage(maxCost int64) *RistrettoStorage {
 	return &RistrettoStorage{c: cache}
 }
 
-func (r *RistrettoStorage) Set(resp *model.Response) {
-	r.c.Set(resp.MapKey(), resp, resp.Weight())
+func (r *RistrettoStorage) Set(entry *model.Entry) {
+	r.c.Set(entry.MapKey(), entry, entry.Weight())
 }
 
-func (r *RistrettoStorage) Get(req *model.Request) (*model.Response, bool) {
-	val, ok := r.c.Get(req.MapKey())
+func (r *RistrettoStorage) Get(entry *model.Entry) (*model.Entry, bool) {
+	val, ok := r.c.Get(entry.MapKey())
 	if !ok {
 		return nil, false
 	}
-	return val.(*model.Response), true
+	return val.(*model.Entry), true
 }
 
 var ristrettoCfg *config.Cache
@@ -116,19 +117,24 @@ func reportMemAndRistretto(b *testing.B, store *RistrettoStorage) {
 
 func BenchmarkRistrettoRead1000x(b *testing.B) {
 	store := NewRistrettoStorage(int64(ristrettoCfg.Cache.Storage.Size))
-	responses := mock.GenerateRandomResponses(ristrettoCfg, path, b.N+1)
 
-	for _, resp := range responses {
+	numEntries := b.N + 1
+	if numEntries > maxEntriesNum {
+		numEntries = maxEntriesNum
+	}
+	entries := mock.GenerateSeqEntries(ristrettoCfg, &repository.Backend{}, path, numEntries)
+
+	for _, resp := range entries {
 		store.Set(resp)
 	}
-	length := len(responses)
+	length := len(entries)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				_, _ = store.Get(responses[(i*j)%length].Request())
+				_, _ = store.Get(entries[(i*j)%length])
 			}
 			i += 1000
 		}
@@ -140,15 +146,19 @@ func BenchmarkRistrettoRead1000x(b *testing.B) {
 
 func BenchmarkRistrettoWrite1000x(b *testing.B) {
 	store := NewRistrettoStorage(int64(ristrettoCfg.Cache.Storage.Size))
-	responses := mock.GenerateRandomResponses(ristrettoCfg, path, b.N+1)
-	length := len(responses)
+	numEntries := b.N + 1
+	if numEntries > maxEntriesNum {
+		numEntries = maxEntriesNum
+	}
+	entries := mock.GenerateSeqEntries(ristrettoCfg, &repository.Backend{}, path, numEntries)
+	length := len(entries)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				store.Set(responses[(i*j)%length])
+				store.Set(entries[(i*j)%length])
 			}
 			i += 1000
 		}
@@ -160,12 +170,11 @@ func BenchmarkRistrettoWrite1000x(b *testing.B) {
 
 func BenchmarkRistrettoGetAllocs(b *testing.B) {
 	store := NewRistrettoStorage(int64(ristrettoCfg.Cache.Storage.Size))
-	resp := mock.GenerateRandomResponses(ristrettoCfg, path, 1)[0]
-	store.Set(resp)
-	req := resp.Request()
+	entry := mock.GenerateSeqEntries(ristrettoCfg, &repository.Backend{}, path, 1)[0]
+	store.Set(entry)
 
 	allocs := testing.AllocsPerRun(100_000, func() {
-		_, _ = store.Get(req)
+		_, _ = store.Get(entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
 
@@ -174,10 +183,10 @@ func BenchmarkRistrettoGetAllocs(b *testing.B) {
 
 func BenchmarkRistrettoSetAllocs(b *testing.B) {
 	store := NewRistrettoStorage(int64(ristrettoCfg.Cache.Storage.Size))
-	resp := mock.GenerateRandomResponses(ristrettoCfg, path, 1)[0]
+	entry := mock.GenerateSeqEntries(ristrettoCfg, &repository.Backend{}, path, 1)[0]
 
 	allocs := testing.AllocsPerRun(100_000, func() {
-		store.Set(resp)
+		store.Set(entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
 

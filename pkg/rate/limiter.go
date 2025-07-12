@@ -19,6 +19,7 @@ func NewLimiter(ctx context.Context, limit, burst int) *Limiter {
 		for {
 			select {
 			case <-ctx.Done():
+				close(l.ch)
 				return
 			default:
 				if err := l.Wait(ctx); err != nil {
