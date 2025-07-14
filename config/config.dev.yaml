@@ -16,7 +16,7 @@ cache:
 
   upstream:
     url: "https://seo-master.lux.kube.xbet.lan" # downstream reverse proxy host:port
-    rate: 50                                   # Rate limiting reqs to backend per second.
+    rate: 10                                   # Rate limiting reqs to backend per second.
     timeout: "10s"                              # Timeout for requests to backend.
 
   preallocate:
@@ -33,7 +33,7 @@ cache:
   refresh:
     ttl: "12h"
     error_ttl: "3h"
-    rate: 1000        # Rate limiting reqs to backend per second.
+    rate: 10        # Rate limiting reqs to backend per second.
     scan_rate: 10000  # Rate limiting of num scans items per second.
     beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
 

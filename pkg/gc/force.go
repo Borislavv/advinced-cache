@@ -57,9 +57,18 @@ func Run(ctx context.Context, cfg *config.Cache) {
 				return
 
 			case <-gcTicker.C:
-				log.Info().Msgf("[force-GC] forcing GC walkthrough")
+				var mem runtime.MemStats
+				runtime.ReadMemStats(&mem)
+
 				runtime.GC()
 
+				log.Info().Msgf(
+					"[force-GC] forced GC pass (last GC pass at: %s, pause: %s)",
+					time.Unix(0, int64(mem.LastGC)).Format(time.RFC3339Nano),
+					lastGCPauseNs(mem.PauseNs),
+				)
+
+				lastAlloc = mem.Alloc
 			case <-freeOssMemTicker.C:
 				var mem runtime.MemStats
 				runtime.ReadMemStats(&mem)
@@ -69,12 +78,12 @@ func Run(ctx context.Context, cfg *config.Cache) {
 					continue
 				}
 
+				debug.FreeOSMemory() // use madvise(DONTNEED) under the hood
+
 				log.Info().Msgf(
 					"[force-GC] forcing flush of freed memory to OS (alloc was %s, now %s)",
 					fmtBytes(lastAlloc), fmtBytes(mem.Alloc),
 				)
-
-				debug.FreeOSMemory() // use madvise(DONTNEED) under the hood
 
 				lastAlloc = mem.Alloc
 			}
@@ -94,4 +103,13 @@ func fmtBytes(b uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f%ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func lastGCPauseNs(pauses [256]uint64) time.Duration {
+	for i := 255; i >= 0; i-- {
+		if pauses[i] > 0 {
+			return time.Duration(pauses[i])
+		}
+	}
+	return time.Duration(0)
 }
