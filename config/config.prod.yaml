@@ -46,7 +46,7 @@ cache:
       max_files: 7
 
   rules:
-    - path: "/api/v2/pagedata"
+    /api/v2/pagedata:
       gzip:
         enabled: true
         threshold: 1024
@@ -65,7 +65,7 @@ cache:
           - Cache-Control
           - Vary
 
-    - path: "/api/v1/pagecontent"
+    /api/v1/pagecontent:
       gzip:
         enabled: true
         threshold: 1024

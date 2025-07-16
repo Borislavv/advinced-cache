@@ -46,7 +46,7 @@ cache:
       max_files: 7
 
   rules:
-    - path: "/api/v2/pagedata"
+    /api/v2/pagedata:
       gzip:
         enabled: false
         threshold: 1024
@@ -69,7 +69,7 @@ cache:
           - X-Content-Digest
           - Age
 
-    - path: "/api/v1/pagecontent"
+    /api/v1/pagecontent:
       gzip:
         enabled: true
         threshold: 1024

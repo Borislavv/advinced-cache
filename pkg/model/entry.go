@@ -20,7 +20,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,7 +33,7 @@ var EntriesPool = sync.Pool{
 }
 
 type Revalidator func(
-	path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 ) (
 	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 )
@@ -125,8 +124,8 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	entry.rule = rule
 	entry.revalidator = revalidator
 
-	filteredQueries, queriesReleaser := entry.parseAndFilterQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
-	defer queriesReleaser()                                              // this is really reduce memory usage and GC pressure
+	filteredQueries, queriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
+	defer queriesReleaser()                                                  // this is really reduce memory usage and GC pressure
 
 	sort.Slice(filteredQueries, func(i, j int) bool {
 		return bytes.Compare(filteredQueries[i][0], filteredQueries[j][0]) < 0
@@ -245,8 +244,6 @@ func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
 }
 
-var queryPrefix = []byte("?")
-
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.
 func (e *Entry) SetPayload(
 	path, query []byte,
@@ -259,7 +256,7 @@ func (e *Entry) SetPayload(
 	numResponseHeaders := len(headers)
 
 	// === 1) Calculate total size ===
-	total := 1
+	total := 0
 	total += 4 + len(path)
 	total += 4 + len(query)
 	total += 4
@@ -289,9 +286,8 @@ func (e *Entry) SetPayload(
 	offset += len(path)
 
 	// Query
-	binary.LittleEndian.PutUint32(scratch[:], uint32(len(query)+1))
+	binary.LittleEndian.PutUint32(scratch[:], uint32(len(query)))
 	payloadBuf = append(payloadBuf, scratch[:]...)
-	payloadBuf = append(payloadBuf, queryPrefix...)
 	payloadBuf = append(payloadBuf, query...)
 	offset += len(query)
 
@@ -489,7 +485,7 @@ func (e *Entry) WillUpdateAt() int64 {
 	return atomic.LoadInt64(&e.willUpdateAt)
 }
 
-func (e *Entry) parseAndFilterQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
+func (e *Entry) parseFilterAndSortQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	b = bytes.TrimLeft(b, "?")
 
 	queries = pools.KeyValueSlicePool.Get().([][2][]byte)
@@ -558,6 +554,12 @@ func (e *Entry) parseAndFilterQuery(b []byte) (queries [][2][]byte, releaseFn fu
 	}
 	queries = filtered
 
+	if len(queries) > 1 {
+		sort.Slice(queries, func(i, j int) bool {
+			return bytes.Compare(queries[i][0], queries[j][0]) < 0
+		})
+	}
+
 	return queries, func() {
 		queries = queries[:0]
 		pools.KeyValueSlicePool.Put(queries)
@@ -603,13 +605,7 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 
 func (e *Entry) GetFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
 	// r.URL.RawQuery - is static immutable string, therefor we can easily refer to it without any allocations.
-	filtered, queryReleaser := e.parseAndFilterQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
-
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
-
-	return filtered, queryReleaser
+	return e.parseFilterAndSortQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
 }
 
 var hKvPool = sync.Pool{
@@ -620,20 +616,12 @@ var hKvPool = sync.Pool{
 
 func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
 	filtered := hKvPool.Get().([][2][]byte)
-	allowedKeys := e.rule.CacheKey.HeadersBytes
+	allowedKeysMap := e.rule.CacheKey.HeadersMap
 
 	r.Request.Header.All()(func(key, value []byte) bool {
-		allowed := false
-		for _, allowedKey := range allowedKeys {
-			if bytes.EqualFold(key, allowedKey) {
-				allowed = true
-				break
-			}
+		if _, ok := allowedKeysMap[unsafe.String(unsafe.SliceData(key), len(key))]; ok {
+			filtered = append(filtered, [2][]byte{key, value})
 		}
-		if !allowed {
-			return true
-		}
-		filtered = append(filtered, [2][]byte{key, value})
 		return true
 	})
 
@@ -649,25 +637,16 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 
 func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
 	filtered := hKvPool.Get().([][2][]byte)
-	allowedKeys := e.rule.CacheKey.HeadersBytes
+	allowedKeysMap := e.rule.CacheKey.HeadersMap
 
 	for key, vv := range r.Header {
 		keyBytes := unsafe.Slice(unsafe.StringData(key), len(key))
 
-		allowed := false
-		for _, allowedKey := range allowedKeys {
-			if bytes.EqualFold(keyBytes, allowedKey) {
-				allowed = true
-				break
+		if _, ok := allowedKeysMap[key]; ok {
+			for _, value := range vv {
+				valBytes := unsafe.Slice(unsafe.StringData(value), len(value))
+				filtered = append(filtered, [2][]byte{keyBytes, valBytes})
 			}
-		}
-		if !allowed {
-			continue
-		}
-
-		for _, value := range vv {
-			valBytes := unsafe.Slice(unsafe.StringData(value), len(value))
-			filtered = append(filtered, [2][]byte{keyBytes, valBytes})
 		}
 	}
 
@@ -710,18 +689,10 @@ func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries [][2][]byte) (kvPairs
 // filteredAndSortedKeyHeadersInPlace - filters an input slice, be careful!
 func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers [][2][]byte) (kvPairs [][2][]byte) {
 	filtered := headers[:0]
-	allowed := e.rule.CacheKey.HeadersBytes
+	allowedMap := e.rule.CacheKey.HeadersMap
 
 	for _, pair := range headers {
-		key := pair[0]
-		keep := false
-		for _, ak := range allowed {
-			if bytes.EqualFold(key, ak) {
-				keep = true
-				break
-			}
-		}
-		if keep {
+		if _, ok := allowedMap[unsafe.String(unsafe.SliceData(pair[0]), len(pair[0]))]; ok {
 			filtered = append(filtered, pair)
 		}
 	}
@@ -787,7 +758,7 @@ func (e *Entry) Revalidate() error {
 		return err
 	}
 
-	statusCode, respHeaders, body, releaser, err := e.revalidator(path, query, headers)
+	statusCode, respHeaders, body, releaser, err := e.revalidator(e.rule, path, query, headers)
 	defer releaser()
 	if err != nil {
 		return err
@@ -812,9 +783,6 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 
 	// Забираем buffer из пула и очищаем
 	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	// Определяем функцию Release
 	releaseFn = func() {
 		buf.Reset()
 		bufPool.Put(buf)
@@ -867,7 +835,7 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 
 	rule := MatchRule(cfg, rulePath)
 	if rule == nil {
-		return nil, fmt.Errorf("rule not found for path: %s", string(rulePath))
+		return nil, fmt.Errorf("rule not found for path: '%s'", string(rulePath))
 	}
 
 	// Key
@@ -907,19 +875,15 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 }
 
 func MatchRule(cfg *config.Cache, path []byte) *config.Rule {
-	for _, rule := range cfg.Cache.Rules {
-		if bytes.EqualFold(path, rule.PathBytes) {
-			return rule
-		}
+	if rule, ok := cfg.Cache.Rules[unsafe.String(unsafe.SliceData(path), len(path))]; ok {
+		return rule
 	}
 	return nil
 }
 
 func MatchRuleStr(cfg *config.Cache, path string) *config.Rule {
-	for _, rule := range cfg.Cache.Rules {
-		if strings.EqualFold(path, rule.Path) {
-			return rule
-		}
+	if rule, ok := cfg.Cache.Rules[path]; ok {
+		return rule
 	}
 	return nil
 }

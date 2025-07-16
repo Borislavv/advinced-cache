@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
-	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
 	"net"
 	"net/http"
@@ -41,13 +40,13 @@ var transport = &http.Transport{
 // Backender defines the interface for a repository that provides SEO page data.
 type Backender interface {
 	Fetch(
-		path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 	) (
 		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 	)
 
 	RevalidatorMaker() func(
-		path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 	) (
 		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 	)
@@ -74,33 +73,41 @@ func NewBackend(cfg *config.Cache) *Backend {
 }
 
 func (s *Backend) Fetch(
-	path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 ) (
 	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 ) {
-	return s.requestExternalBackend(path, query, queryHeaders)
+	return s.requestExternalBackend(rule, path, query, queryHeaders)
 }
 
 // RevalidatorMaker builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
 func (s *Backend) RevalidatorMaker() func(
-	path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 ) (
 	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 ) {
 	return func(
-		path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 	) (
 		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 	) {
-		return s.requestExternalBackend(path, query, queryHeaders)
+		return s.requestExternalBackend(rule, path, query, queryHeaders)
 	}
 }
 
-var emptyReleaseFn = func() {}
+var (
+	emptyReleaseFn = func() {}
+	urlBufPool     = sync.Pool{
+		New: func() interface{} {
+			return new(bytes.Buffer)
+		},
+	}
+	queryPrefix = []byte("?")
+)
 
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
 func (s *Backend) requestExternalBackend(
-	path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 ) (status int, headers [][2][]byte, body []byte, releaseFn func(), err error) {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
@@ -109,15 +116,19 @@ func (s *Backend) requestExternalBackend(
 
 	url := unsafe.Slice(unsafe.StringData(s.cfg.Cache.Upstream.Url), len(s.cfg.Cache.Upstream.Url))
 
-	urlBuf := bytebufferpool.Get()
+	urlBuf := urlBufPool.Get().(*bytes.Buffer)
+	urlBuf.Grow(len(url) + len(path) + len(query) + 1)
 	defer func() {
 		urlBuf.Reset()
-		bytebufferpool.Put(urlBuf)
+		urlBufPool.Put(urlBuf)
 	}()
 	if _, err = urlBuf.Write(url); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 	if _, err = urlBuf.Write(path); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
+	}
+	if _, err = urlBuf.Write(queryPrefix); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 	if _, err = urlBuf.Write(query); err != nil {
@@ -137,12 +148,18 @@ func (s *Backend) requestExternalBackend(
 	}
 
 	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
+
+	allowedHeadersMap := rule.CacheValue.HeadersMap
 	resp.Header.All()(func(k, v []byte) bool {
-		keyCopied := pools.BackendBufPool.Get().([]byte)
-		copy(keyCopied, k)
-		valueCopied := pools.BackendBufPool.Get().([]byte)
-		copy(valueCopied, v)
-		headers = append(headers, [2][]byte{keyCopied, valueCopied})
+		if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
+			keyBuf := pools.BackendBufPool.Get().([]byte)[:0]
+			keyBuf = append(keyBuf, k...) // Copy it! Don't use unsafe here due to fasthttp will reuse buffers when request will end.
+
+			valBuf := pools.BackendBufPool.Get().([]byte)[:0]
+			valBuf = append(valBuf, v...) // Copy it! Don't use unsafe here due to fasthttp will reuse buffers when request will end.
+
+			headers = append(headers, [2][]byte{keyBuf, valBuf})
+		}
 		return true
 	})
 

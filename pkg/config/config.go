@@ -35,18 +35,18 @@ type Env struct {
 }
 
 type CacheBox struct {
-	Env         string        `yaml:"env"`
-	Enabled     bool          `yaml:"enabled"`
-	Logs        Logs          `yaml:"logs"`
-	ForceGC     ForceGC       `yaml:"forceGC"`
-	LifeTime    Lifetime      `yaml:"lifetime"`
-	Upstream    Upstream      `yaml:"upstream"`
-	Persistence Persistence   `yaml:"persistence"`
-	Preallocate Preallocation `yaml:"preallocate"`
-	Eviction    Eviction      `yaml:"eviction"`
-	Refresh     Refresh       `yaml:"refresh"`
-	Storage     Storage       `yaml:"storage"`
-	Rules       []*Rule       `yaml:"rules"`
+	Env         string           `yaml:"env"`
+	Enabled     bool             `yaml:"enabled"`
+	Logs        Logs             `yaml:"logs"`
+	ForceGC     ForceGC          `yaml:"forceGC"`
+	LifeTime    Lifetime         `yaml:"lifetime"`
+	Upstream    Upstream         `yaml:"upstream"`
+	Persistence Persistence      `yaml:"persistence"`
+	Preallocate Preallocation    `yaml:"preallocate"`
+	Eviction    Eviction         `yaml:"eviction"`
+	Refresh     Refresh          `yaml:"refresh"`
+	Storage     Storage          `yaml:"storage"`
+	Rules       map[string]*Rule `yaml:"rules"`
 }
 
 type ForceGC struct {
@@ -119,8 +119,7 @@ type Gzip struct {
 }
 
 type Rule struct {
-	Gzip       Gzip   `yaml:"gzip"`
-	Path       string `yaml:"path"`
+	Gzip       Gzip `yaml:"gzip"`
 	PathBytes  []byte
 	TTL        time.Duration `yaml:"ttl"`       // TTL for this rule.
 	ErrorTTL   time.Duration `yaml:"error_ttl"` // ErrorTTL for this rule.
@@ -131,15 +130,15 @@ type Rule struct {
 }
 
 type Key struct {
-	Query        []string `yaml:"query"` // Параметры, которые будут участвовать в ключе кэширования
-	QueryBytes   [][]byte
-	Headers      []string `yaml:"headers"` // Хедеры, которые будут участвовать в ключе кэширования
-	HeadersBytes [][]byte
+	Query      []string `yaml:"query"` // Параметры, которые будут участвовать в ключе кэширования
+	QueryBytes [][]byte
+	Headers    []string `yaml:"headers"` // Хедеры, которые будут участвовать в ключе кэширования
+	HeadersMap map[string]struct{}
 }
 
 type Value struct {
-	Headers      []string `yaml:"headers"` // Хедеры ответа, которые будут сохранены в кэше вместе с body
-	HeadersBytes [][]byte
+	Headers    []string `yaml:"headers"` // Хедеры ответа, которые будут сохранены в кэше вместе с body
+	HeadersMap map[string]struct{}
 }
 
 func LoadConfig(path string) (*Cache, error) {
@@ -167,18 +166,30 @@ func LoadConfig(path string) (*Cache, error) {
 		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
 	}
 
-	for k, rule := range cfg.Cache.Rules {
-		cfg.Cache.Rules[k].PathBytes = []byte(rule.Path)
-		for _, param := range rule.CacheKey.Query {
-			cfg.Cache.Rules[k].CacheKey.QueryBytes = append(cfg.Cache.Rules[k].CacheKey.QueryBytes, []byte(param))
+	for rulePath, rule := range cfg.Cache.Rules {
+		rule.PathBytes = []byte(rulePath)
+
+		// Query
+		for _, query := range rule.CacheKey.Query {
+			rule.CacheKey.QueryBytes = append(rule.CacheKey.QueryBytes, []byte(query))
 		}
-		for _, param := range rule.CacheKey.Headers {
-			cfg.Cache.Rules[k].CacheKey.HeadersBytes = append(cfg.Cache.Rules[k].CacheKey.HeadersBytes, []byte(param))
+
+		// Request headers
+		keyHeadersMap := make(map[string]struct{}, len(rule.CacheKey.Headers))
+		for _, header := range rule.CacheKey.Headers {
+			keyHeadersMap[header] = struct{}{}
 		}
-		for _, param := range rule.CacheValue.Headers {
-			cfg.Cache.Rules[k].CacheValue.HeadersBytes = append(cfg.Cache.Rules[k].CacheValue.HeadersBytes, []byte(param))
+		rule.CacheKey.HeadersMap = keyHeadersMap
+
+		// Response headers
+		valueHeadersMap := make(map[string]struct{}, len(rule.CacheValue.Headers))
+		for _, header := range rule.CacheValue.Headers {
+			valueHeadersMap[header] = struct{}{}
 		}
-		cfg.Cache.Rules[k].MinStale = time.Duration(float64(rule.TTL) * rule.Beta)
+		rule.CacheValue.HeadersMap = valueHeadersMap
+
+		// Other
+		rule.MinStale = time.Duration(float64(rule.TTL) * rule.Beta)
 	}
 
 	cfg.Cache.Refresh.MinStale = time.Duration(float64(cfg.Cache.Refresh.TTL) * cfg.Cache.Refresh.Beta)

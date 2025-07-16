@@ -89,14 +89,20 @@ func init() {
 					Beta:      0.4,
 					MinStale:  time.Duration(float64(time.Hour) * 0.4),
 					CacheKey: config.Key{
-						Query:        []string{"project[id]", "domain", "language", "choice"},
-						QueryBytes:   [][]byte{[]byte("project[id]"), []byte("domain"), []byte("language"), []byte("choice")},
-						Headers:      []string{"Accept-Encoding", "Accept-Language"},
-						HeadersBytes: [][]byte{[]byte("Accept-Encoding"), []byte("Accept-Language")},
+						Query:      []string{"project[id]", "domain", "language", "choice"},
+						QueryBytes: [][]byte{[]byte("project[id]"), []byte("domain"), []byte("language"), []byte("choice")},
+						Headers:    []string{"Accept-Encoding", "Accept-Language"},
+						HeadersMap: map[string]struct{}{
+							"Accept-Encoding": {},
+							"Accept-Language": {},
+						},
 					},
 					CacheValue: config.Value{
-						Headers:      []string{"Content-Type", "Vary"},
-						HeadersBytes: [][]byte{[]byte("Content-Type"), []byte("Vary")},
+						Headers: []string{"Content-Type", "Vary"},
+						HeadersMap: map[string]struct{}{
+							"Content-Type": {},
+							"Vary":         {},
+						},
 					},
 				},
 			},

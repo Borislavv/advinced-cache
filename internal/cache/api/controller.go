@@ -106,7 +106,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		queryHeaders, queryReleaser := c.queryHeaders(r)
 		defer queryReleaser()
 
-		status, headers, body, releaser, err = c.backend.Fetch(path, queryString, queryHeaders)
+		status, headers, body, releaser, err = c.backend.Fetch(entry.Rule(), path, queryString, queryHeaders)
 		defer releaser()
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
