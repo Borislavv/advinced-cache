@@ -21,10 +21,7 @@ func TestRefCountingNew(t *testing.T) {
 
 	for idx := 0; idx < 150; idx++ {
 		e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
-		db[idx] = &VersionedPointer{
-			V:   e.Version(),
-			Ptr: nil,
-		}
+		db[idx] = NewVersionedPointer(e)
 	}
 
 	go func() {
@@ -72,10 +69,7 @@ func TestRefCountingNew(t *testing.T) {
 						old.Ptr.Remove()
 					}
 					e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
-					db[idx] = &VersionedPointer{
-						V:   e.Version(),
-						Ptr: nil,
-					}
+					db[idx] = NewVersionedPointer(e)
 					mu.Unlock()
 				}
 			}
