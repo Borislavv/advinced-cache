@@ -433,8 +433,6 @@ func (e *Entry) SetPayload(
 	atomic.StoreInt64(&e.isCompressed, 0)
 }
 
-var emptyFn = func() {}
-
 // Payload decompresses the entire payload and unpacks it into fields.
 func (e *Entry) Payload() (
 	path []byte,
@@ -443,12 +441,11 @@ func (e *Entry) Payload() (
 	responseHeaders [][2][]byte,
 	body []byte,
 	status int,
-	releaseFn func(),
 	err error,
 ) {
 	payload := e.PayloadBytes()
 	if len(payload) == 0 {
-		return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("payload is empty")
+		return nil, nil, nil, nil, nil, 0, fmt.Errorf("payload is empty")
 	}
 
 	var rawPayload []byte
@@ -456,13 +453,13 @@ func (e *Entry) Payload() (
 		// TODO need to move it to sync.Pool
 		gr, err := gzip.NewReader(bytes.NewReader(payload))
 		if err != nil {
-			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("make gzip reader error: %w", err)
+			return nil, nil, nil, nil, nil, 0, fmt.Errorf("make gzip reader error: %w", err)
 		}
 		defer gr.Close()
 
 		rawPayload, err = io.ReadAll(gr)
 		if err != nil {
-			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("gzip read failed: %w", err)
+			return nil, nil, nil, nil, nil, 0, fmt.Errorf("gzip read failed: %w", err)
 		}
 	} else {
 		rawPayload = payload
@@ -529,14 +526,15 @@ func (e *Entry) Payload() (
 	offset += 4
 	body = rawPayload[offset:]
 
-	releaseFn = func() {
-		queryHeaders = queryHeaders[:0]
-		pools.KeyValueSlicePool.Put(queryHeaders)
-		responseHeaders = responseHeaders[:0]
-		pools.KeyValueSlicePool.Put(responseHeaders)
-	}
-
 	return
+}
+
+func (e *Entry) ReleasePayload(queryHeaders, responseHeaders [][2][]byte) {
+	queryHeaders = queryHeaders[:0]
+	pools.KeyValueSlicePool.Put(queryHeaders)
+
+	responseHeaders = responseHeaders[:0]
+	pools.KeyValueSlicePool.Put(responseHeaders)
 }
 
 func (e *Entry) Rule() *config.Rule {
@@ -831,8 +829,8 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 
 // Revalidate calls the revalidator closure to fetch fresh data and updates the timestamp.
 func (e *Entry) Revalidate() error {
-	path, query, headers, _, _, _, release, err := e.Payload()
-	defer release()
+	path, query, headers, responseHeaders, _, _, err := e.Payload()
+	defer e.ReleasePayload(headers, responseHeaders)
 	if err != nil {
 		return err
 	}
@@ -974,8 +972,8 @@ func (e *Entry) SetMapKey(key uint64) *Entry {
 }
 
 func (e *Entry) DumpPayload() {
-	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
-	defer releaseFn()
+	path, query, queryHeaders, responseHeaders, body, status, err := e.Payload()
+	defer e.ReleasePayload(queryHeaders, responseHeaders)
 	if err != nil {
 		log.Error().Err(err).Msg("[dump] failed to unpack payload")
 		return

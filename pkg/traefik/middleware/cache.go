@@ -99,9 +99,9 @@ func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		// Always read from cached foundEntry
-		var payloadReleaser func()
-		_, _, _, headers, body, status, payloadReleaser, err = foundEntry.Payload()
-		defer payloadReleaser()
+		var queryHeaders [][2][]byte
+		_, _, queryHeaders, headers, body, status, err = foundEntry.Payload()
+		defer foundEntry.ReleasePayload(queryHeaders, headers)
 		if err != nil {
 			m.next.ServeHTTP(w, r)
 

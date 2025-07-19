@@ -130,8 +130,9 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		// unpack found Entry data
-		_, _, _, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
-		defer payloadReleaser()
+		var queryHeaders [][2][]byte
+		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, err = foundEntry.Payload()
+		defer foundEntry.ReleasePayload(queryHeaders, payloadHeaders)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
